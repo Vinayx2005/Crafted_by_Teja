@@ -7,11 +7,17 @@ export const metadata: Metadata = {
   description: 'Short stories, essays, and books by Teja Surishetti — written from the heart, in Telugu and English.',
   metadataBase: new URL('https://dilse.craftedbyteja.com'),
   openGraph: {
+    // Preview image auto-picked from src/app/opengraph-image.png.
     title: 'DILSe · Stories by Teja Surishetti',
     description: 'The essence of my memories and beliefs.',
     url: 'https://dilse.craftedbyteja.com',
     siteName: 'DILSe',
     type: 'website',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'DILSe · Stories by Teja Surishetti',
+    description: 'The essence of my memories and beliefs.',
   },
 };
 
