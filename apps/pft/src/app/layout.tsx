@@ -19,18 +19,19 @@ export const metadata: Metadata = {
     title: 'Personal FT',
   },
   openGraph: {
+    // Preview image is auto-picked up from src/app/opengraph-image.tsx
+    // (a dynamic 1200×630 orange PFT card). Do NOT set images here or
+    // Next.js will render both, and the wrong one may win the scrape.
     title: 'Personal FT — Know where your money goes',
     description: 'A finance tracker that finds your leaks and helps you feel calm about money.',
     url: 'https://pft.craftedbyteja.com',
     siteName: 'Personal FT',
-    images: [{ url: '/images/logo.png', width: 512, height: 512, alt: 'Personal FT' }],
     type: 'website',
   },
   twitter: {
-    card: 'summary',
+    card: 'summary_large_image',
     title: 'Personal FT — Know where your money goes',
     description: 'A finance tracker that finds your leaks and helps you feel calm about money.',
-    images: ['/images/logo.png'],
   },
 };
 
