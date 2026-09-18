@@ -8,12 +8,12 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Crafted by Teja',
   description: 'Builder, writer, explorer. Ideas, tools and thoughts for a more intentional life.',
-  metadataBase: new URL('https://craftedbyteja.com'),
+  metadataBase: new URL('https://www.craftedbyteja.com'),
   openGraph: {
     // Preview image auto-picked from src/app/opengraph-image.jpg (teja.jpg).
     title: 'Crafted by Teja',
     description: 'Builder, writer, explorer. Ideas, tools and thoughts for a more intentional life.',
-    url: 'https://craftedbyteja.com',
+    url: 'https://www.craftedbyteja.com',
     siteName: 'Crafted by Teja',
     type: 'website',
   },
