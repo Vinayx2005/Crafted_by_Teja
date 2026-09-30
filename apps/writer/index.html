@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="te">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Indian AI Translator</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Telugu:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #000;
+    --panel: #0c0c0c;
+    --panel2: #141414;
+    --border: #262626;
+    --text: #f2f2f2;
+    --muted: #8a8a8a;
+    --faint: #555;
+    --accent: #f5b301;
+    --ok: #3ddc84;
+    --bad: #e5484d;
+    --fs: 22px;
+    --script: "Noto Sans Telugu", "Nirmala UI", "Noto Sans", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: Inter, system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  button, select { font: inherit; }
+
+  header {
+    padding: 18px 24px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 21px; font-weight: 600; }
+  header h1 span { color: var(--accent); font-family: var(--script); }
+
+  .route { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding-left: 2px; }
+  .langsel {
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 12px; font-size: 14px; cursor: pointer; outline: none;
+    font-family: Inter, "Nirmala UI", "Noto Sans Telugu", sans-serif;
+    min-width: 190px;
+  }
+  .langsel:focus, .langsel:hover { border-color: var(--accent); }
+  #langSel { border-color: var(--accent); }
+  .langsel option { background: #111; }
+  .swap {
+    align-self: flex-end;
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px;
+    width: 38px; height: 38px; cursor: pointer; font-size: 17px;
+  }
+  .swap:hover { border-color: var(--accent); color: var(--accent); }
+
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 4px 24px 0; }
+  .quick .ql { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; min-width: 38px; }
+  .quick button {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer;
+    font-family: Inter, "Nirmala UI", sans-serif;
+  }
+  .quick button:hover { color: var(--text); border-color: #444; }
+  .quick button.active { color: #000; background: var(--accent); border-color: var(--accent); }
+  .quick.from button.active { background: var(--text); border-color: var(--text); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 12px 24px 8px;
+  }
+  .box {
+    display: flex; flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 56vh;
+  }
+  .box:focus-within { border-color: #3a3a3a; }
+  .head {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 8px 10px 8px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; color: var(--muted);
+    min-height: 46px;
+  }
+  .head b { color: var(--text); font-weight: 600; font-family: Inter, "Nirmala UI", sans-serif; }
+  .tools { display: flex; gap: 6px; align-items: center; }
+  .ibtn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    height: 30px; min-width: 30px; padding: 0 9px;
+    font-size: 12px; cursor: pointer;
+  }
+  .ibtn:hover { border-color: var(--accent); color: var(--accent); }
+  .ibtn.live { border-color: var(--bad); color: var(--bad); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .5; } }
+  .ibtn svg { width: 15px; height: 15px; }
+
+  textarea, .output {
+    flex: 1; width: 100%;
+    background: transparent; color: var(--text);
+    border: 0; outline: none; resize: none;
+    padding: 16px;
+    font-size: var(--fs); line-height: 1.75;
+    white-space: pre-wrap; word-wrap: break-word;
+    overflow-y: auto;
+    min-height: 200px;
+  }
+  textarea { font-family: Inter, "Nirmala UI", system-ui, sans-serif; font-size: calc(var(--fs) - 2px); }
+  textarea::placeholder { color: var(--faint); }
+  .output { font-family: var(--script); }
+  .output:empty::before { content: attr(data-empty); color: var(--faint); }
+  .w { cursor: pointer; border-radius: 4px; padding: 0 1px; }
+  .w:hover { background: #1f1f1f; }
+  .w.fixed { text-decoration: underline dotted var(--ok) 2px; text-underline-offset: 6px; }
+  .w.mine { text-decoration: underline dotted var(--accent) 2px; text-underline-offset: 6px; }
+  .w.active { background: #2a2208; outline: 1px solid var(--accent); }
+
+  .strip {
+    border-top: 1px solid var(--border);
+    padding: 10px 14px;
+    min-height: 54px;
+    font-size: 14px;
+  }
+  .strip .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
+  .sugs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sug {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 4px 10px; cursor: pointer;
+    font-family: var(--script); font-size: 17px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .sug:hover { border-color: var(--accent); }
+  .sug.cur { border-color: var(--accent); color: var(--accent); }
+  .sug.best { border-color: var(--ok); }
+  .sug small { font-family: Inter, sans-serif; font-size: 10px; color: var(--muted); }
+  .hint { color: var(--faint); font-size: 13px; }
+  .meaning { color: #cfcfcf; }
+  .dym { color: var(--muted); }
+  .dym a { color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .teline { font-family: var(--script); font-size: 18px; line-height: 1.7; margin-bottom: 6px; white-space: pre-wrap; }
+  .teline:empty { display: none; }
+  .roman { color: var(--muted); font-style: italic; }
+
+  .bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    padding: 6px 24px 10px; font-size: 13px; color: var(--muted);
+  }
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .switch input { display: none; }
+  .switch i { width: 34px; height: 19px; border-radius: 10px; background: #333; position: relative; transition: .2s; }
+  .switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #999; transition: .2s; }
+  .switch input:checked + i { background: var(--ok); }
+  .switch input:checked + i::after { left: 17px; background: #000; }
+  .sep { width: 1px; height: 18px; background: var(--border); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.on { background: var(--ok); } .dot.off { background: var(--bad); } .dot.busy { background: var(--accent); }
+  .spacer { flex: 1; }
+
+  .legend { margin: 0 24px 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+  .lg-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
+  .legend ul { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 2px 20px; }
+  .legend li { font-size: 13px; color: var(--muted); padding: 4px 6px; border-radius: 6px; cursor: pointer; }
+  .legend li::before { content: "•"; color: var(--accent); margin-right: 8px; }
+  .legend li b { color: var(--text); font-weight: 600; }
+  .legend li:hover { background: var(--panel2); }
+  .legend li.active { background: #2a2208; }
+  .legend li.active b { color: var(--accent); }
+
+  .disclaimer { margin: 0 24px 20px; padding: 0 4px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+  .disclaimer b { color: var(--text); font-weight: 600; }
+
+  #history {
+    margin: 0 24px 20px; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--panel); display: none;
+  }
+  #history.open { display: block; }
+  #history .hl { max-height: 280px; overflow-y: auto; }
+  .hi { padding: 10px 14px; border-top: 1px solid var(--border); cursor: pointer; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 14px; }
+  .hi:hover { background: var(--panel2); }
+  .hi .te { font-family: var(--script); }
+  .hi .en { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--accent); color: #000; padding: 8px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500; opacity: 0; transition: .2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  kbd { background: #1c1c1c; border: 1px solid #333; border-radius: 4px; padding: 0 4px; font-size: 11px; }
+
+  @media (max-width: 760px) {
+    header, .bar { padding-left: 16px; padding-right: 16px; }
+    .quick { padding-left: 16px; padding-right: 16px; }
+    main { grid-template-columns: 1fr; padding: 10px 16px; }
+    .box { min-height: 34vh; }
+    #history { margin: 0 16px 16px; }
+    .legend { margin: 0 16px 12px; }
+    .disclaimer { margin: 0 16px 16px; }
+    .hi { grid-template-columns: 1fr; gap: 2px; }
+    .route { width: 100%; }
+    .field { flex: 1; }
+    .langsel { min-width: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crafted by <span>Teja</span></h1>
+  <div class="route">
+    <div class="field">
+      <label for="srcSel">I'm typing in</label>
+      <select id="srcSel" class="langsel"></select>
+    </div>
+    <button class="swap" id="swapBtn" title="Swap languages">⇄</button>
+    <div class="field">
+      <label for="langSel">Translate to</label>
+      <select id="langSel" class="langsel"></select>
+    </div>
+  </div>
+</header>
+<div class="quick from" id="quickFrom"></div>
+<div class="quick" id="quick"></div>
+
+<main>
+  <section class="box">
+    <div class="head">
+      <b id="inLabel">Type Telugu in English letters</b>
+      <div class="tools">
+        <button class="ibtn" id="micBtn" title="Voice typing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+        <button class="ibtn" id="clearBtn" title="Clear">Clear</button>
+      </div>
+    </div>
+    <textarea id="input" spellcheck="false" autofocus></textarea>
+    <div class="strip" id="sugStrip">
+      <div class="lbl"><span id="sugLabel">Suggestions</span><span id="kbdHint"><kbd>Alt</kbd>+<kbd>1-8</kbd> to pick</span></div>
+      <div class="sugs" id="sugs"></div>
+    </div>
+  </section>
+
+  <section class="box">
+    <div class="head">
+      <b id="outLabel">తెలుగు</b>
+      <div class="tools">
+        <button class="ibtn" id="speakBtn" title="Listen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/></svg>
+        </button>
+        <button class="ibtn" id="copyBtn" title="Copy">Copy</button>
+        <button class="ibtn" id="dlBtn" title="Download as .txt">Save</button>
+      </div>
+    </div>
+    <div id="output" class="output"></div>
+    <div class="strip">
+      <div class="lbl"><span id="meaningLabel">English meaning</span></div>
+      <div id="teLine" class="teline"></div>
+      <div id="meaning" class="meaning"><span class="hint">—</span></div>
+    </div>
+  </section>
+</main>
+
+<div class="bar">
+  <label class="switch" title="Fix spelling using full-sentence context"><input type="checkbox" id="acToggle" checked><i></i>Auto-correct</label>
+  <span class="sep"></span>
+  <span>Size</span>
+  <button class="ibtn" id="fsDown">A−</button>
+  <button class="ibtn" id="fsUp">A+</button>
+  <span class="sep"></span>
+  <span id="counts">0 words · 0 chars</span>
+  <span class="sep"></span>
+  <span id="myWords"></span>
+  <span class="spacer"></span>
+  <button class="ibtn" id="histBtn">History</button>
+  <span><span id="dot" class="dot on"></span><span id="status">AI Live</span></span>
+</div>
+
+<section class="legend">
+  <div class="lg-title">What do these names mean?</div>
+  <ul id="legend"></ul>
+</section>
+
+<p class="disclaimer">
+  <b>Disclaimer:</b> We do not store any data you enter. Your history and saved words are kept only in your own browser, and you can clear them anytime.
+  To translate and correct spellings, your text is sent to Google's translation services.
+</p>
+
+<section id="history">
+  <div class="head"><b>History</b><div class="tools"><button class="ibtn" id="histClear">Clear history</button></div></div>
+  <div class="hl" id="histList"></div>
+</section>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const input = $('input'), output = $('output'), sugsEl = $('sugs'), meaningEl = $('meaning'), nativeLine = $('teLine');
+
+  // ---------- storage (wrapped: may be blocked) ----------
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  };
+
+  // ---------- Languages ----------
+  // [code, English name, native name, Google Input Tools code (null = cannot type phonetically), example]
+  const LANGS = [
+    ['te', 'Telugu', 'తెలుగు', 'te', 'nenu bagunnanu, meeru ela unnaru?'],
+    ['hi', 'Hindi', 'हिन्दी', 'hi', 'aap kaise ho? mera naam rahul hai'],
+    ['ta', 'Tamil', 'தமிழ்', 'ta', 'vanakkam, eppadi irukkeenga?'],
+    ['kn', 'Kannada', 'ಕನ್ನಡ', 'kn', 'namaskara, hegiddira?'],
+    ['ml', 'Malayalam', 'മലയാളം', 'ml', 'namaskaram, sukhamano?'],
+    ['mr', 'Marathi', 'मराठी', 'mr', 'namaskar, tumhi kase aahat?'],
+    ['bn', 'Bengali', 'বাংলা', 'bn', 'nomoskar, tumi kemon acho?'],
+    ['gu', 'Gujarati', 'ગુજરાતી', 'gu', 'kem cho? majama cho?'],
+    ['pa', 'Punjabi', 'ਪੰਜਾਬੀ', 'pa', 'sat sri akal, ki haal hai?'],
+    ['or', 'Odia', 'ଓଡ଼ିଆ', 'or', 'namaskar, apana kemiti achanti?'],
+    ['ur', 'Urdu', 'اردو', 'ur', 'aap kaise hain?'],
+    ['as', 'Assamese', 'অসমীয়া', 'as', 'namaskar, apuni kene ase?'],
+    ['en', 'English', 'English', null, 'how are you doing today?'],
+    ['sa', 'Sanskrit', 'संस्कृतम्', 'sa', 'namaskaram, bhavan katham asti?'],
+    ['gom', 'Konkani', 'कोंकणी', 'mr', 'dev borem korum'],
+    ['mai', 'Maithili', 'मैथिली', 'hi', 'ahan kena chhi?'],
+    ['ne', 'Nepali', 'नेपाली', 'ne', 'namaste, tapai lai kasto cha?'],
+    ['doi', 'Dogri', 'डोगरी', 'hi', 'tusi kiyan o?'],
+    ['sd', 'Sindhi', 'سنڌي', null, ''],
+    ['mni-Mtei', 'Manipuri', 'ꯃꯤꯇꯩꯂꯣꯟ', null, '']
+  ];
+  const SOURCES = LANGS.filter(l => l[3] || l[0] === 'en');
+  // What people call each language written in English letters
+  const ROMAN = {
+    te: 'Tanglish', hi: 'Hinglish', ta: 'Thanglish', kn: 'Kanglish', ml: 'Manglish',
+    mr: 'Minglish', bn: 'Banglish', gu: 'Gujlish', pa: 'Punglish', or: 'Odiglish',
+    ur: 'Roman Urdu', as: 'Assamglish', sa: 'Roman Sanskrit', gom: 'Roman Konkani',
+    mai: 'Roman Maithili', ne: 'Nepglish', doi: 'Roman Dogri', en: 'English'
+  };
+  const romanOf = c => ROMAN[c] || L(c)[1];
+  const QUICK = ['te', 'hi', 'ta', 'kn', 'ml', 'mr', 'bn', 'en'];
+  const RTL = ['ur', 'sd'];
+  const L = c => LANGS.find(l => l[0] === c) || LANGS[0];
+  const nameOf = c => { const [, en, nat] = L(c); return en === nat ? en : `${nat} · ${en}`; };
+
+  let src = store.get('tr_src', 'te');
+  let tgt = store.get('te_tgt', 'te');
+  if (!SOURCES.some(l => l[0] === src)) src = 'te';
+  if (!LANGS.some(l => l[0] === tgt)) tgt = 'te';
+  let autoCorrect = store.get('te_ac', true);
+  let fontSize = store.get('te_fs', 22);
+  let history = store.get('te_hist', []);
+  // user's chosen words, keyed "lang:romanword" (old Telugu-only keys are migrated)
+  let overrides = store.get('te_words', {});
+  for (const k of Object.keys(overrides)) if (!k.includes(':')) { overrides['te:' + k] = overrides[k]; delete overrides[k]; }
+
+  const phonetic = () => src !== 'en';
+
+  // ---------- Offline phonetic fallback (Telugu) ----------
+  const VOWELS = [
+    ['aa','ఆ','ా'],['ai','ఐ','ై'],['au','ఔ','ౌ'],['ou','ఔ','ౌ'],
+    ['ee','ఈ','ీ'],['ii','ఈ','ీ'],['oo','ఊ','ూ'],['uu','ఊ','ూ'],['ru','ఋ','ృ'],
+    ['a','అ',''],['i','ఇ','ి'],['u','ఉ','ు'],['e','ఎ','ె'],['o','ఒ','ొ']
+  ];
+  const CONS = [
+    ['chh','ఛ'],['ksh','క్ష'],
+    ['kh','ఖ'],['gh','ఘ'],['ch','చ'],['jh','ఝ'],['th','థ'],['dh','ధ'],
+    ['ph','ఫ'],['bh','భ'],['sh','శ'],
+    ['k','క'],['g','గ'],['c','చ'],['j','జ'],['t','ట'],['d','డ'],['n','న'],
+    ['p','ప'],['f','ఫ'],['b','బ'],['m','మ'],['y','య'],['r','ర'],['l','ల'],
+    ['v','వ'],['w','వ'],['s','స'],['h','హ'],['x','క్స'],['z','జ'],['q','క']
+  ];
+  const VIRAMA = '్';
+  const matchFrom = (list, s, i) => list.find(it => s.startsWith(it[0], i)) || null;
+
+  function offlineTelugu(word) {
+    const s = word.toLowerCase();
+    let out = '', i = 0, pending = false;
+    while (i < s.length) {
+      const c = matchFrom(CONS, s, i);
+      if (c) {
+        if (pending) out += VIRAMA;
+        if (c[0] === 'n' && !pending) {
+          const nxt = matchFrom(CONS, s, i + 1);
+          if (nxt && !'nyrvwh'.includes(nxt[0][0])) { out += 'ం'; i++; pending = false; continue; }
+        }
+        out += c[1]; i += c[0].length; pending = true; continue;
+      }
+      const v = matchFrom(VOWELS, s, i);
+      if (v) { out += pending ? v[2] : v[1]; i += v[0].length; pending = false; continue; }
+      if (pending) out += VIRAMA;
+      out += s[i]; i++; pending = false;
+    }
+    if (pending) out += VIRAMA;
+    return out;
+  }
+  const fallback = w => src === 'te' ? offlineTelugu(w) : w;
+
+  // ---------- Status ----------
+  let online = true;
+  function setStatus(s) {
+    $('dot').className = 'dot ' + s;
+    $('status').textContent = { on: 'AI Live', off: 'Offline mode', busy: 'Thinking…' }[s];
+  }
+  const settle = () => setStatus(online ? 'on' : 'off');
+
+  // ---------- Google services ----------
+  const candCache = new Map(), candInflight = new Map();
+  const ck = w => src + ':' + w.toLowerCase();
+
+  function fetchCands(word) {
+    const key = ck(word), itc = L(src)[3];
+    if (candCache.has(key)) return Promise.resolve(candCache.get(key));
+    if (candInflight.has(key)) return candInflight.get(key);
+    const url = `https://inputtools.google.com/request?itc=${itc}-t-i0-und&num=8&cp=0&cs=1&ie=utf-8&oe=utf-8&app=demopage&text=` + encodeURIComponent(word.toLowerCase());
+    const p = fetch(url).then(r => r.json()).then(j => {
+      if (j[0] !== 'SUCCESS') throw 0;
+      const list = j[1][0][1];
+      candCache.set(key, list); online = true; return list;
+    }).catch(() => { online = false; return null; })
+      .finally(() => candInflight.delete(key));
+    candInflight.set(key, p);
+    return p;
+  }
+
+  const gtCache = new Map();
+  function gtranslate(text, sl, tl) {
+    const key = sl + '|' + tl + '|' + text;
+    if (gtCache.has(key)) return Promise.resolve(gtCache.get(key));
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&dt=rm&dt=qca&q=` + encodeURIComponent(text);
+    return fetch(url).then(r => r.json()).then(j => {
+      const segs = j[0] || [];
+      const res = {
+        text: segs.filter(s => s[0]).map(s => s[0]).join(''),
+        roman: (segs.find(s => s[0] == null && s[2]) || [])[2] || '',
+        corrected: (j[7] && j[7][1]) || null
+      };
+      gtCache.set(key, res); online = true; return res;
+    }).catch(() => { online = false; return null; });
+  }
+
+  // ---------- Phonetic typing engine (any language) ----------
+  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const LATIN = /([A-Za-z]+)/;
+  const lettersOnly = s => s.replace(/[^\p{L}\p{M}\p{N}]/gu, '');
+
+  function baseWord(w) {
+    const k = ck(w);
+    return overrides[k] || (candCache.get(k) || [])[0] || fallback(w);
+  }
+
+  let model = null;        // current pieces
+  let lastCorr = null;     // { raw: [...], corr: [...] }
+  let activeIdx = -1;      // piece chosen by clicking (-1 = follow caret)
+
+  function buildModel() {
+    const parts = input.value.split(/(\s+)/);
+    const pieces = [], layout = [];
+    for (const p of parts) {
+      if (!p) continue;
+      if (/^\s+$/.test(p)) { layout.push(p); continue; }
+      const sub = p.split(LATIN);
+      const words = sub.filter((_, i) => i % 2);
+      const raw = sub.map((s, i) => i % 2 ? baseWord(s) : s).join('');
+      pieces.push({ words, raw, roman: words.length === 1 ? words[0].toLowerCase() : null });
+      layout.push(pieces.length - 1);
+    }
+    pieces.forEach((pc, i) => {
+      pc.shown = pc.raw; pc.fixed = false; pc.mine = pc.roman && overrides[src + ':' + pc.roman];
+      if (autoCorrect && !pc.mine && lastCorr && lastCorr.raw[i] === pc.raw && lastCorr.corr[i] !== pc.raw) {
+        pc.shown = lastCorr.corr[i]; pc.fixed = true;
+      }
+    });
+    model = { pieces, layout };
+    return model;
+  }
+
+  // Native-script text lives in the big box when target == source, else in the strip below
+  const nativeHost = () => tgt === src ? output : nativeLine;
+
+  function renderNative() {
+    const { pieces, layout } = buildModel();
+    const cur = currentPieceIndex();
+    nativeHost().innerHTML = layout.map(x => {
+      if (typeof x === 'string') return esc(x);
+      const pc = pieces[x];
+      if (!pc.words.length) return esc(pc.shown);
+      const cls = ['w'];
+      if (pc.fixed) cls.push('fixed');
+      if (pc.mine) cls.push('mine');
+      if (x === cur) cls.push('active');
+      const title = pc.fixed ? `Auto-corrected (was ${pc.raw})` : pc.mine ? 'Your saved word' : '';
+      return `<span class="${cls.join(' ')}" data-i="${x}" title="${esc(title)}">${esc(pc.shown)}</span>`;
+    }).join('');
+    renderSuggestions();
+    updateCounts();
+  }
+
+  const nativeText = () => model ? model.layout.map(x => typeof x === 'string' ? x : model.pieces[x].shown).join('') : '';
+
+  function currentPieceIndex() {
+    if (activeIdx >= 0) return activeIdx;
+    const before = input.value.slice(0, input.selectionStart);
+    const n = before.split(/\s+/).filter(Boolean).length;
+    if (!n) return -1;
+    return /\s$/.test(before) ? -1 : n - 1;
+  }
+
+  // ---------- Suggestions ----------
+  let sugList = [];
+  function renderSuggestions() {
+    if (!phonetic()) return;
+    const i = currentPieceIndex();
+    const pc = model && model.pieces[i];
+    if (!pc || !pc.roman) {
+      $('sugLabel').textContent = 'Suggestions';
+      sugList = [];
+      sugsEl.innerHTML = `<span class="hint">Type a word to see ${esc(L(src)[1])} suggestions. Click any word to change it.</span>`;
+      return;
+    }
+    const cands = candCache.get(ck(pc.roman));
+    if (!cands) fetchCands(pc.roman).then(() => { if (phonetic()) renderNative(); });
+    const corrWord = pc.fixed ? lettersOnly(pc.shown) : null;
+    const seen = new Set();
+    sugList = [];
+    const add = (w, tag) => { if (w && !seen.has(w)) { seen.add(w); sugList.push({ w, tag }); } };
+    add(corrWord, 'auto-fix');
+    (cands || []).forEach(w => add(w));
+    if (src === 'te') add(offlineTelugu(pc.roman), 'as typed');
+    const curWord = lettersOnly(pc.shown);
+    $('sugLabel').textContent = `Suggestions for “${pc.roman}”`;
+    sugsEl.innerHTML = sugList.slice(0, 9).map((s, n) => {
+      const cls = ['sug'];
+      if (s.w === curWord) cls.push('cur');
+      if (s.tag === 'auto-fix') cls.push('best');
+      return `<button class="${cls.join(' ')}" data-n="${n}"><small>${n + 1}</small>${esc(s.w)}${s.tag ? ` <small>${s.tag}</small>` : ''}</button>`;
+    }).join('') + (overrides[ck(pc.roman)] ? ' <button class="sug" data-reset="1"><small>reset</small></button>' : '');
+  }
+
+  function pickSuggestion(n) {
+    const pc = model && model.pieces[currentPieceIndex()];
+    if (!pc || !pc.roman || !sugList[n]) return;
+    overrides[ck(pc.roman)] = sugList[n].w;
+    store.set('te_words', overrides);
+    renderNative(); updateMyWords(); scheduleCorrection();
+    toast(`Saved: ${pc.roman} → ${sugList[n].w}`);
+  }
+
+  sugsEl.addEventListener('mousedown', e => e.preventDefault()); // keep caret in textarea
+  sugsEl.addEventListener('click', e => {
+    const b = e.target.closest('.sug'); if (!b) return;
+    if (b.dataset.reset) {
+      const pc = model.pieces[currentPieceIndex()];
+      delete overrides[ck(pc.roman)]; store.set('te_words', overrides);
+      renderNative(); updateMyWords(); scheduleCorrection(); return;
+    }
+    pickSuggestion(+b.dataset.n);
+  });
+
+  const onWordClick = e => {
+    if (!phonetic()) return;
+    const w = e.target.closest('.w'); if (!w) return;
+    activeIdx = +w.dataset.i;
+    renderNative();
+  };
+  output.addEventListener('click', onWordClick);
+  nativeLine.addEventListener('click', onWordClick);
+
+  // ---------- Auto-correct + translation ----------
+  let corrTimer = null, corrVersion = 0;
+  function scheduleCorrection() {
+    clearTimeout(corrTimer);
+    corrTimer = setTimeout(runCorrection, 450);
+  }
+  async function runCorrection() {
+    const my = ++corrVersion;
+    if (phonetic()) {
+      const raw = model.pieces.map(p => p.raw);
+      const rawText = model.layout.map(x => typeof x === 'string' ? x : model.pieces[x].raw).join('').trim();
+      if (!rawText) {
+        meaningEl.innerHTML = '<span class="hint">—</span>';
+        if (tgt !== src) output.textContent = '';
+        updateCounts(); settle(); return;
+      }
+      setStatus('busy');
+      const res = await gtranslate(rawText, src, 'en');   // spell-check + English meaning
+      if (my !== corrVersion) return;
+      if (!res) { meaningEl.innerHTML = '<span class="hint">Needs internet.</span>'; settle(); return; }
+      const corrPieces = (res.corrected || rawText).split(/\s+/).filter(Boolean);
+      if (corrPieces.length === raw.length) lastCorr = { raw, corr: corrPieces };
+      renderNative();
+      const shownText = nativeText().trim();
+      const outTl = tgt === src ? 'en' : tgt;
+      const m = outTl === 'en' && shownText === (res.corrected || rawText) ? res : await gtranslate(shownText, src, outTl);
+      if (my !== corrVersion) return;
+      if (tgt === src) {
+        meaningEl.textContent = (m && m.text) || '—';
+      } else {
+        output.textContent = (m && m.text) || '';
+        meaningEl.innerHTML = m && m.roman ? `<span class="roman">${esc(m.roman)}</span>` : '';
+        updateCounts();
+      }
+      saveHistorySoon();
+      settle();
+    } else {
+      const text = input.value.trim();
+      if (!text) { output.textContent = ''; meaningEl.innerHTML = '<span class="hint">—</span>'; renderEnHint(null); updateCounts(); settle(); return; }
+      setStatus('busy');
+      const res = await gtranslate(text, 'en', tgt);
+      if (my !== corrVersion) return;
+      if (res) {
+        output.textContent = tgt === 'en' ? (res.corrected || text) : res.text;
+        meaningEl.innerHTML = res.roman ? `<span class="roman">${esc(res.roman)}</span>` : '—';
+        renderEnHint(res.corrected && res.corrected.toLowerCase() !== text.toLowerCase() ? res.corrected : null);
+        saveHistorySoon();
+      } else {
+        output.textContent = '';
+        meaningEl.innerHTML = '<span class="hint">Translation needs internet.</span>';
+      }
+      updateCounts();
+      settle();
+    }
+  }
+
+  function renderEnHint(fix) {
+    $('sugLabel').textContent = 'Spelling check';
+    if (fix) {
+      sugsEl.innerHTML = `<span class="dym">Did you mean: <a id="dymA">${esc(fix)}</a>?</span>`;
+      $('dymA').onclick = () => { input.value = fix; onInput(); input.focus(); };
+    } else {
+      sugsEl.innerHTML = '<span class="hint">No spelling mistakes found.</span>';
+    }
+  }
+
+  // ---------- Input flow ----------
+  function onInput() {
+    activeIdx = -1;
+    if (phonetic()) {
+      renderNative();
+      const missing = [...new Set(model.pieces.flatMap(p => p.words))].filter(w => !candCache.has(ck(w)));
+      if (missing.length) {
+        setStatus('busy');
+        Promise.all(missing.map(fetchCands)).then(() => { renderNative(); settle(); scheduleCorrection(); });
+        return;
+      }
+    } else {
+      updateCounts();
+    }
+    scheduleCorrection();
+  }
+  input.addEventListener('input', onInput);
+  ['click', 'keyup'].forEach(ev => input.addEventListener(ev, e => {
+    if (!phonetic() || (e.type === 'keyup' && !e.key.startsWith('Arrow') && e.key !== 'Home' && e.key !== 'End')) return;
+    activeIdx = -1; renderNative();
+  }));
+
+  document.addEventListener('keydown', e => {
+    if (e.altKey && /^[1-9]$/.test(e.key) && phonetic()) { e.preventDefault(); pickSuggestion(+e.key - 1); }
+  });
+
+  // ---------- Language selection ----------
+  function applyLanguages() {
+    store.set('tr_src', src); store.set('te_tgt', tgt);
+    $('srcSel').value = src; $('langSel').value = tgt;
+    document.querySelectorAll('#quickFrom button').forEach(b => b.classList.toggle('active', b.dataset.l === src));
+    document.querySelectorAll('#quick button').forEach(b => b.classList.toggle('active', b.dataset.l === tgt));
+    document.querySelectorAll('#legend li').forEach(li => li.classList.toggle('active', li.dataset.l === src));
+
+    const [, sEn, sNat, , example] = L(src);
+    const [, tEn] = L(tgt);
+    $('outLabel').textContent = nameOf(tgt);
+    output.dir = RTL.includes(tgt) ? 'rtl' : 'ltr';
+    nativeLine.dir = RTL.includes(src) ? 'rtl' : 'ltr';
+    $('kbdHint').style.display = phonetic() ? '' : 'none';
+
+    if (phonetic()) {
+      $('inLabel').textContent = `${romanOf(src)} — ${sEn} in English letters`;
+      input.placeholder = `ex: ${example}\n\n(You can also type or paste ${sNat} directly)`;
+      $('meaningLabel').textContent = tgt === src ? 'English meaning' : `${sEn} (auto-corrected) · pronunciation`;
+    } else {
+      $('inLabel').textContent = 'Type in English';
+      input.placeholder = `ex: ${example}`;
+      $('meaningLabel').textContent = 'Pronunciation';
+    }
+    output.setAttribute('data-empty', tgt !== src ? `${tEn} translation appears here...`
+      : src === 'te' ? 'తెలుగు ఇక్కడ కనిపిస్తుంది...' : `${sNat} appears here...`);
+
+    output.innerHTML = ''; nativeLine.innerHTML = ''; meaningEl.innerHTML = '';
+    lastCorr = null;
+    onInput();
+    input.focus();
+  }
+
+  const opt = l => `<option value="${l[0]}">${l[1] === l[2] ? l[1] : `${l[1]} — ${l[2]}`}</option>`;
+  $('srcSel').innerHTML = SOURCES.map(l => `<option value="${l[0]}">${l[0] === 'en' ? 'English' : `${romanOf(l[0])} (${l[1]})`}</option>`).join('');
+  $('langSel').innerHTML = LANGS.map(opt).join('');
+  $('srcSel').onchange = e => { src = e.target.value; applyLanguages(); };
+  $('langSel').onchange = e => { tgt = e.target.value; applyLanguages(); };
+
+  const chips = (el, label, codes, name) => {
+    el.innerHTML = `<span class="ql">${label}</span>` + codes.map(c => `<button data-l="${c}" title="${L(c)[1]}">${name(c)}</button>`).join('');
+  };
+  chips($('quickFrom'), 'From', QUICK, romanOf);
+  chips($('quick'), 'To', QUICK, c => L(c)[2]);
+  $('quickFrom').onclick = e => { const b = e.target.closest('button'); if (b) { src = b.dataset.l; applyLanguages(); } };
+  $('quick').onclick = e => { const b = e.target.closest('button'); if (b) { tgt = b.dataset.l; applyLanguages(); } };
+
+  // Legend: "Tanglish → Telugu in English letters" (click to select)
+  $('legend').innerHTML = SOURCES.filter(l => l[0] !== 'en')
+    .map(l => `<li data-l="${l[0]}"><b>${romanOf(l[0])}</b> → ${l[1]} in English letters</li>`).join('');
+  $('legend').onclick = e => { const li = e.target.closest('li'); if (li) { src = li.dataset.l; applyLanguages(); window.scrollTo({ top: 0, behavior: 'smooth' }); } };
+
+  $('swapBtn').onclick = () => {
+    if (!SOURCES.some(l => l[0] === tgt)) return toast(`Typing in ${L(tgt)[1]} is not supported`);
+    const translated = outText().trim();
+    [src, tgt] = [tgt, src];
+    if (translated) input.value = translated;
+    applyLanguages();
+  };
+
+  // ---------- Tools ----------
+  function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1600);
+  }
+  const outText = () => phonetic() && tgt === src ? nativeText() : output.textContent;
+
+  $('clearBtn').onclick = () => { input.value = ''; onInput(); input.focus(); };
+  $('copyBtn').onclick = async () => {
+    try { await navigator.clipboard.writeText(outText()); toast('Copied!'); } catch { toast('Copy failed'); }
+  };
+  $('dlBtn').onclick = () => {
+    const blob = new Blob([outText()], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `translation-${tgt}.txt`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+
+  // Listen
+  let audio = null;
+  $('speakBtn').onclick = () => {
+    if (audio) { audio.pause(); audio = null; $('speakBtn').classList.remove('live'); return; }
+    const text = outText().trim(); if (!text) return;
+    const chunks = text.match(/[^.!?।۔\n]{1,180}[.!?।۔\n]?/g) || [text];
+    let i = 0;
+    $('speakBtn').classList.add('live');
+    const next = () => {
+      if (i >= chunks.length) { audio = null; $('speakBtn').classList.remove('live'); return; }
+      audio = new Audio(`https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tgt}&q=` + encodeURIComponent(chunks[i++].trim()));
+      audio.onended = next;
+      audio.onerror = () => { audio = null; $('speakBtn').classList.remove('live'); fallbackSpeak(text); };
+      audio.play().catch(audio.onerror);
+    };
+    next();
+  };
+  function fallbackSpeak(text) {
+    if (!('speechSynthesis' in window)) return toast('Audio not available');
+    const u = new SpeechSynthesisUtterance(text); u.lang = tgt === 'en' ? 'en-IN' : tgt + '-IN';
+    speechSynthesis.speak(u);
+  }
+
+  // Voice typing (speaks in the "typing in" language)
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  $('micBtn').onclick = () => {
+    if (!SR) return toast('Voice typing works in Chrome / Edge');
+    if (rec) { rec.stop(); return; }
+    rec = new SR();
+    rec.lang = src === 'en' ? 'en-IN' : (src === 'gom' || src === 'mai' || src === 'doi' ? 'hi' : src) + '-IN';
+    rec.interimResults = false; rec.continuous = true;
+    rec.onresult = e => {
+      const said = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ');
+      const pos = input.selectionStart, v = input.value;
+      const pad = pos && !/\s$/.test(v.slice(0, pos)) ? ' ' : '';
+      input.value = v.slice(0, pos) + pad + said + ' ' + v.slice(pos);
+      input.selectionStart = input.selectionEnd = pos + pad.length + said.length + 1;
+      onInput();
+    };
+    rec.onend = () => { rec = null; $('micBtn').classList.remove('live'); };
+    rec.onerror = ev => toast('Mic: ' + ev.error);
+    rec.start();
+    $('micBtn').classList.add('live');
+    toast(`Speak in ${L(src)[1]}…`);
+  };
+
+  // Auto-correct toggle
+  $('acToggle').checked = autoCorrect;
+  $('acToggle').onchange = e => { autoCorrect = e.target.checked; store.set('te_ac', autoCorrect); onInput(); };
+
+  // Font size
+  const applyFs = () => { document.documentElement.style.setProperty('--fs', fontSize + 'px'); store.set('te_fs', fontSize); };
+  $('fsUp').onclick = () => { fontSize = Math.min(40, fontSize + 2); applyFs(); };
+  $('fsDown').onclick = () => { fontSize = Math.max(14, fontSize - 2); applyFs(); };
+  applyFs();
+
+  function updateCounts() {
+    const t = outText();
+    const w = t.trim() ? t.trim().split(/\s+/).length : 0;
+    $('counts').textContent = `${w} words · ${[...t].length} chars`;
+  }
+
+  function updateMyWords() {
+    const n = Object.keys(overrides).length;
+    $('myWords').innerHTML = n ? `My words: ${n} <a href="#" id="resetWords" style="color:var(--accent)">reset</a>` : 'My words: 0';
+    const r = $('resetWords');
+    if (r) r.onclick = e => { e.preventDefault(); if (confirm('Forget all your saved word choices?')) { overrides = {}; store.set('te_words', overrides); updateMyWords(); onInput(); } };
+  }
+  updateMyWords();
+
+  // History
+  let histTimer = null;
+  function saveHistorySoon() {
+    clearTimeout(histTimer);
+    histTimer = setTimeout(() => {
+      const text = input.value.trim(), out = outText().trim();
+      if (text.length < 3 || !out) return;
+      const last = history[0];
+      if (last && last.from === src && last.to === tgt && (text.startsWith(last.text) || last.text.startsWith(text))) history.shift();
+      history.unshift({ from: src, to: tgt, text, out });
+      history = history.slice(0, 30);
+      store.set('te_hist', history);
+      renderHistory();
+    }, 2500);
+  }
+  // older entries used {mode, tgt, src:text}
+  const normH = h => h.from ? h : { from: h.mode === 'en2te' ? 'en' : 'te', to: h.tgt || 'te', text: h.src, out: h.out };
+  function renderHistory() {
+    $('histList').innerHTML = history.length
+      ? history.map((h, i) => { h = normH(h); return `<div class="hi" data-i="${i}"><div class="te">${esc(h.out)}</div><div class="en">${esc(romanOf(h.from))} → ${esc(L(h.to)[1])} · ${esc(h.text)}</div></div>`; }).join('')
+      : '<div class="hi"><span class="hint">No history yet.</span></div>';
+  }
+  $('histBtn').onclick = () => { $('history').classList.toggle('open'); renderHistory(); };
+  $('histClear').onclick = () => { history = []; store.set('te_hist', history); renderHistory(); };
+  $('histList').onclick = e => {
+    const row = e.target.closest('.hi'); if (!row || !history[+row.dataset.i]) return;
+    const h = normH(history[+row.dataset.i]);
+    input.value = h.text;
+    src = SOURCES.some(l => l[0] === h.from) ? h.from : 'te'; tgt = h.to;
+    applyLanguages();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  applyLanguages();
+})();
+</script>
+</body>
+</html>
