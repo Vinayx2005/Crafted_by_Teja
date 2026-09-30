@@ -1,4 +1,4 @@
-import { ArrowRight, IndianRupee } from 'lucide-react';
+import { ArrowRight, Dices, IndianRupee } from 'lucide-react';
 
 // Static list. Add new tools here as they ship — no CMS needed until
 // the roster grows past ~5 or the descriptions start needing edits
@@ -11,6 +11,15 @@ const TOOLS = [
     body: 'Voice-log an expense in seconds. Budgets, loans, receivables, recurring debits — no bank linking, all free.',
     accent: 'from-18-orange to-orange-600',
     icon: IndianRupee,
+    live: true,
+  },
+  {
+    href: '/name-picker',
+    title: 'Name Picker',
+    tagline: 'Spin a wheel, pick a name.',
+    body: 'Paste a list of names and spin for a random winner. Shuffle, sort, remove winners as you go — nothing leaves your browser.',
+    accent: 'from-indigo-500 to-violet-600',
+    icon: Dices,
     live: true,
   },
 ];

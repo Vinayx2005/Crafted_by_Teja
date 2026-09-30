@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wheel of Names</title>
+<style>
+  :root {
+    --bg1: #ffffff;
+    --bg2: #ffffff;
+    --panel: #ffffff;
+    --panel-border: #e2e5ee;
+    --text: #1b1e28;
+    --muted: #6b7288;
+    --accent: #4f5bd5;
+    --accent-hover: #3f4bc4;
+    --danger: #e0475b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    color: var(--text);
+    min-height: 100vh;
+    background-color: #1a2038;
+  }
+  .scene {
+    position: fixed; inset: 0;
+    width: 100%; height: 100%;
+    z-index: -1;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 24px;
+    background: rgba(15, 20, 40, .45);
+    border-bottom: 1px solid rgba(255,255,255,.08);
+    color: #fff;
+  }
+  .logo {
+    width: 40px; height: 40px; border-radius: 10px;
+    background: conic-gradient(#f26b6b, #f7c948, #6fd08c, #5aa9e6, #b084d9, #f26b6b);
+  }
+  header h1 { font-size: 24px; font-weight: 600; }
+  .back {
+    margin-left: auto;
+    color: rgba(255,255,255,.75); text-decoration: none;
+    font-size: 14px; font-weight: 600;
+    padding: 7px 12px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.15);
+    transition: color .15s, border-color .15s;
+  }
+  .back:hover { color: #fff; border-color: rgba(255,255,255,.4); }
+
+  main {
+    display: flex; gap: 32px; align-items: center; justify-content: center;
+    padding: 28px 24px; flex-wrap: wrap;
+  }
+
+  /* ---------- Wheel ---------- */
+  .wheel-wrap {
+    position: relative;
+    width: min(640px, 92vw);
+    aspect-ratio: 1 / 1;
+  }
+  #wheel {
+    width: 100%; height: 100%;
+    display: block; cursor: pointer;
+    border-radius: 50%;
+    filter: drop-shadow(0 16px 28px rgba(0,0,0,.5));
+  }
+  .pointer {
+    position: absolute;
+    right: -14px; top: 50%;
+    transform: translateY(-50%);
+    width: 0; height: 0;
+    border-top: 20px solid transparent;
+    border-bottom: 20px solid transparent;
+    border-right: 44px solid #f1f4ff;
+    filter: drop-shadow(-2px 3px 3px rgba(0,0,0,.5));
+    z-index: 3;
+  }
+  .pointer::after {
+    content: ""; position: absolute;
+    right: -40px; top: -12px;
+    border-top: 12px solid transparent;
+    border-bottom: 12px solid transparent;
+    border-right: 28px solid #4f9bd9;
+  }
+  .spin-btn {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 21%; aspect-ratio: 1 / 1;
+    border-radius: 50%;
+    border: 6px solid #ffffff;
+    background: radial-gradient(circle at 35% 30%, #ff7a7a, #d6263c 70%);
+    color: #fff; font-weight: 800;
+    font-size: clamp(16px, 3.4vw, 26px);
+    letter-spacing: 2px;
+    cursor: pointer;
+    box-shadow: 0 6px 16px rgba(0,0,0,.45), inset 0 -4px 8px rgba(0,0,0,.25);
+    transition: transform .15s ease, filter .15s ease;
+    z-index: 2;
+  }
+  .spin-btn:hover:not(:disabled) { transform: translate(-50%, -50%) scale(1.06); }
+  .spin-btn:disabled { filter: grayscale(.4) brightness(.85); cursor: not-allowed; }
+
+  /* ---------- Panel ---------- */
+  .panel {
+    width: min(420px, 92vw);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .panel-head h2 { font-size: 18px; font-weight: 600; }
+  .badge {
+    background: #3a4058; color: #fff; font-size: 13px;
+    padding: 2px 10px; border-radius: 999px; margin-left: 6px;
+  }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 8px;
+    padding: 9px 14px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background .15s;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn.secondary { background: #3a4058; }
+  .btn.secondary:hover { background: #474e6a; }
+  .btn.danger { background: var(--danger); }
+  .btn.danger:hover { background: #c83a4d; }
+  textarea {
+    width: 100%; height: 360px; resize: vertical;
+    background: #f7f8fb; color: var(--text);
+    border: 2px solid #d5d9e4; border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 16px; line-height: 1.6;
+    font-family: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+
+  .results { margin-top: 14px; }
+  .results h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+  .results ol { padding-left: 20px; font-size: 14px; max-height: 110px; overflow-y: auto; }
+
+  /* ---------- Winner modal ---------- */
+  .overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center;
+    z-index: 10; padding: 16px;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    width: min(460px, 100%);
+    background: #fff; color: #1b1e28;
+    border-radius: 16px; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    animation: pop .35s cubic-bezier(.2, 1.4, .4, 1);
+  }
+  @keyframes pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .modal-head {
+    padding: 16px 20px; color: #fff;
+    font-size: 20px; font-weight: 700;
+  }
+  .modal-body { padding: 30px 20px; text-align: center; }
+  .winner-name { font-size: 44px; font-weight: 800; word-break: break-word; }
+  .modal-foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 20px; border-top: 1px solid #e6e8ee;
+  }
+  #confetti {
+    position: fixed; inset: 0; pointer-events: none; z-index: 11;
+  }
+
+  @media (max-width: 600px) {
+    header { padding: 12px 16px; }
+    main { padding: 20px 16px; gap: 24px; }
+    textarea { height: 220px; }
+  }
+</style>
+</head>
+<body>
+<svg class="scene" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2038"/>
+      <stop offset="1" stop-color="#262f5c"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#fff6de" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#fff6de" stop-opacity="0"/>
+    </radialGradient>
+    <symbol id="tree" viewBox="0 0 100 200">
+      <rect x="46" y="150" width="8" height="50" fill="#16324a"/>
+      <path d="M50 0C70 30 90 60 85 95C95 110 100 140 80 160C60 172 40 172 20 160C0 140 5 110 15 95C10 60 30 30 50 0Z" fill="currentColor"/>
+      <path d="M50 0C60 40 62 100 55 168C70 166 80 160 80 160C100 140 95 110 85 95C90 60 70 30 50 0Z" fill="#000" opacity=".16"/>
+      <path d="M30 70q20 10 40 0M22 112q28 12 56 0M28 145q22 8 44 0" stroke="#fff" stroke-opacity=".2" stroke-width="3" fill="none"/>
+    </symbol>
+    <symbol id="leaf" viewBox="-5 -90 175 110" overflow="visible">
+      <path d="M0 0C40 -60 120 -85 165 -65C125 -20 60 12 0 0Z" fill="currentColor"/>
+      <path d="M0 0C50 -25 110 -50 165 -65" stroke="#fff" stroke-opacity=".3" stroke-width="3" fill="none"/>
+    </symbol>
+    <symbol id="spark" viewBox="-30 -30 60 60">
+      <path d="M0 -30L6 -6L30 0L6 6L0 30L-6 6L-30 0L-6 -6Z" fill="#fff"/>
+    </symbol>
+    <symbol id="flowers" viewBox="0 0 120 120" overflow="visible">
+      <g fill="#f4f6ff">
+        <circle cx="20" cy="20" r="7"/><circle cx="42" cy="12" r="6"/><circle cx="60" cy="30" r="8"/>
+        <circle cx="32" cy="44" r="6"/><circle cx="78" cy="14" r="5"/><circle cx="86" cy="46" r="7"/>
+        <circle cx="54" cy="62" r="6"/><circle cx="18" cy="72" r="5"/><circle cx="100" cy="78" r="6"/>
+        <circle cx="72" cy="90" r="7"/><circle cx="40" cy="98" r="5"/>
+      </g>
+      <path d="M20 20Q50 80 60 120M60 30Q65 80 60 120M86 46Q70 90 60 120" stroke="#c9d3ff" stroke-width="2" fill="none"/>
+    </symbol>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#sky)"/>
+
+  <!-- moon & stars -->
+  <circle cx="380" cy="170" r="170" fill="url(#glow)"/>
+  <circle cx="380" cy="170" r="72" fill="#f6efdc"/>
+  <g fill="#fff">
+    <circle cx="80" cy="240" r="6"/><circle cx="700" cy="200" r="6"/><circle cx="1130" cy="220" r="6"/>
+    <circle cx="1480" cy="250" r="6"/><circle cx="240" cy="340" r="5"/><circle cx="960" cy="90" r="4"/>
+    <circle cx="1320" cy="120" r="5"/><circle cx="600" cy="360" r="5"/><circle cx="1560" cy="80" r="4"/>
+  </g>
+  <use href="#spark" x="505" y="130" width="60" height="60"/>
+  <use href="#spark" x="40" y="400" width="44" height="44"/>
+  <use href="#spark" x="1240" y="300" width="40" height="40"/>
+
+  <!-- back hills & trees -->
+  <path d="M0 610Q300 510 620 590T1200 560T1600 540V900H0Z" fill="#2c3f9f"/>
+  <use href="#tree" x="120" y="380" width="110" height="240" color="#1f9f93"/>
+  <use href="#tree" x="210" y="430" width="80" height="180" color="#26b7a6"/>
+  <use href="#tree" x="1180" y="360" width="120" height="250" color="#1f9f93"/>
+  <use href="#tree" x="1290" y="420" width="85" height="180" color="#2ac3b0"/>
+  <use href="#tree" x="1400" y="390" width="100" height="220" color="#1a8c86"/>
+  <use href="#tree" x="20" y="450" width="90" height="190" color="#1a8c86"/>
+
+  <!-- lighthouse -->
+  <g transform="translate(1440 330)">
+    <path d="M10 0H50L60 250H0Z" fill="#f1f4ff"/>
+    <path d="M6 70H54L56 110H4ZM3 160H57L59 200H1Z" fill="#4c6ce0"/>
+    <rect x="12" y="-30" width="36" height="30" fill="#f7c948"/>
+    <path d="M6 -30L30 -55L54 -30Z" fill="#4c6ce0"/>
+  </g>
+
+  <!-- middle hill with striped field -->
+  <path d="M0 700Q400 590 820 680T1600 650V900H0Z" fill="#3653c9"/>
+  <g stroke="#5c78e6" stroke-width="10" stroke-linecap="round" opacity=".7">
+    <path d="M880 700Q1040 660 1200 690"/><path d="M860 740Q1050 700 1240 730"/><path d="M850 780Q1060 745 1280 770"/>
+  </g>
+
+  <!-- little house -->
+  <g transform="translate(420 520)">
+    <path d="M0 70L70 10L140 70V170H0Z" fill="#f4f1ea"/>
+    <path d="M-10 75L70 5L150 75L140 80L70 20L0 80Z" fill="#3b56c8"/>
+    <rect x="25" y="90" width="30" height="30" fill="#f7c948"/>
+    <rect x="85" y="110" width="30" height="60" fill="#23305f"/>
+  </g>
+  <use href="#tree" x="580" y="470" width="90" height="200" color="#26b7a6"/>
+  <use href="#tree" x="330" y="500" width="80" height="170" color="#1f9f93"/>
+
+  <!-- front hill -->
+  <path d="M0 800Q500 710 1000 790T1600 770V900H0Z" fill="#1f2f88"/>
+
+  <!-- foreground leaves & flowers -->
+  <use href="#leaf" x="-60" y="700" width="330" height="210" color="#5b4fd0" transform="rotate(-25 100 800)"/>
+  <use href="#leaf" x="-40" y="760" width="300" height="190" color="#2bb3a3" transform="rotate(-5 100 850)"/>
+  <use href="#leaf" x="60" y="780" width="260" height="170" color="#8a7cf0" transform="rotate(-45 200 860)"/>
+  <use href="#leaf" x="1330" y="700" width="330" height="210" color="#5b4fd0" transform="scale(-1 1) translate(-3000 0) rotate(-25 1500 800)"/>
+  <use href="#leaf" x="1350" y="760" width="300" height="190" color="#2bb3a3" transform="scale(-1 1) translate(-3000 0) rotate(-5 1500 850)"/>
+  <use href="#leaf" x="1440" y="780" width="260" height="170" color="#8a7cf0" transform="scale(-1 1) translate(-3000 0) rotate(-45 1580 860)"/>
+  <use href="#flowers" x="30" y="560" width="140" height="140"/>
+  <use href="#flowers" x="1450" y="560" width="150" height="150"/>
+  <use href="#flowers" x="760" y="760" width="110" height="110"/>
+</svg>
+<header>
+  <div class="logo"></div>
+  <h1>Crafted by Teja</h1>
+  <a class="back" href="/">&larr; Tools</a>
+</header>
+
+<main>
+  <div class="wheel-wrap">
+    <canvas id="wheel"></canvas>
+    <div class="pointer"></div>
+    <button class="spin-btn" id="spinBtn">SPIN</button>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Entries <span class="badge" id="count">0</span></h2>
+    </div>
+    <div class="toolbar">
+      <button class="btn" id="shuffleBtn">&#8645; Shuffle</button>
+      <button class="btn secondary" id="sortBtn">A&rarr;Z Sort</button>
+      <button class="btn secondary" id="clearBtn">Clear</button>
+    </div>
+    <textarea id="names" spellcheck="false" placeholder="Type or paste names here, one per line">Gabriel
+Diya
+Ali
+Eric
+Charles
+Teja
+Fatima
+Hanna</textarea>
+    <p class="hint">One name per line. Type or paste as many as you like.</p>
+    <div class="results">
+      <h3>Winners</h3>
+      <ol id="results"></ol>
+    </div>
+  </section>
+</main>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="modal-head" id="modalHead">&#127881; Congratulations!</div>
+    <div class="modal-body">
+      <div class="winner-name" id="winnerName"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn secondary" id="closeBtn">Close</button>
+      <button class="btn danger" id="removeBtn">Remove</button>
+    </div>
+  </div>
+</div>
+<canvas id="confetti"></canvas>
+
+<script>
+  const COLORS = ["#f26b6b", "#f7c948", "#6fd08c", "#5aa9e6", "#b084d9", "#ff9f5a", "#4fd1c5", "#f78fb3"];
+  const SPIN_MS = 5000;
+
+  const canvas = document.getElementById("wheel");
+  const ctx = canvas.getContext("2d");
+  const textarea = document.getElementById("names");
+  const countEl = document.getElementById("count");
+  const spinBtn = document.getElementById("spinBtn");
+  const overlay = document.getElementById("overlay");
+  const winnerNameEl = document.getElementById("winnerName");
+  const modalHead = document.getElementById("modalHead");
+  const resultsEl = document.getElementById("results");
+
+  let names = [];
+  let rotation = 0;          // radians
+  let spinning = false;
+  let winnerIndex = -1;
+  let size = 0;
+
+  function readNames() {
+    names = textarea.value.split("\n").map(s => s.trim()).filter(Boolean);
+    countEl.textContent = names.length;
+  }
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    size = rect.width;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function colorFor(i, n) {
+    let c = COLORS[i % COLORS.length];
+    // avoid same color on first & last slice
+    if (n > 1 && i === n - 1 && c === COLORS[0]) c = COLORS[(i + 1) % COLORS.length];
+    return c;
+  }
+
+  function draw() {
+    const cx = size / 2, cy = size / 2;
+    const r = size / 2 - 6;
+    ctx.clearRect(0, 0, size, size);
+
+    // outer rim
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 4, 0, Math.PI * 2);
+    ctx.fillStyle = "#d5d9e4";
+    ctx.fill();
+
+    if (names.length === 0) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#3a4058";
+      ctx.fill();
+      ctx.fillStyle = "#cfd5e3";
+      ctx.font = `600 ${size * 0.04}px Segoe UI, Arial`;
+      ctx.textAlign = "center";
+      ctx.fillText("Add names to begin", cx, cy + size * 0.2);
+      return;
+    }
+
+    const n = names.length;
+    const arc = (Math.PI * 2) / n;
+    const fontSize = Math.max(10, Math.min(size * 0.07, (size * 1.6) / n, size * 0.07));
+
+    for (let i = 0; i < n; i++) {
+      const start = rotation + i * arc;
+      const end = start + arc;
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, r, start, end);
+      ctx.closePath();
+      ctx.fillStyle = colorFor(i, n);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,.55)";
+      ctx.lineWidth = n > 60 ? 0.5 : 2;
+      ctx.stroke();
+
+      // name text
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(start + arc / 2);
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#1b1e28";
+      let label = names[i];
+      const maxW = r * 0.66;
+      ctx.font = `600 ${fontSize}px Segoe UI, Arial`;
+      while (ctx.measureText(label).width > maxW && label.length > 1) {
+        label = label.slice(0, -2) + "…";
+      }
+      ctx.fillText(label, r - 18, 0);
+      ctx.restore();
+    }
+
+    // soft inner shading for a realistic look
+    const g = ctx.createRadialGradient(cx, cy, r * 0.2, cx, cy, r);
+    g.addColorStop(0, "rgba(255,255,255,0.12)");
+    g.addColorStop(0.85, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,0.18)");
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+
+  // Index of the slice under the pointer (pointer is on the right, angle 0)
+  function indexAtPointer() {
+    const n = names.length;
+    const arc = (Math.PI * 2) / n;
+    const a = ((-rotation) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+    return Math.floor(a / arc) % n;
+  }
+
+  // ---- tick sound ----
+  let audioCtx = null;
+  function tick() {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      o.type = "square";
+      o.frequency.value = 900;
+      gain.gain.setValueAtTime(0.04, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.04);
+      o.connect(gain).connect(audioCtx.destination);
+      o.start();
+      o.stop(audioCtx.currentTime + 0.05);
+    } catch (e) {}
+  }
+
+  // Fast at the start, smoothly slowing down to a stop
+  const easeOut = t => 1 - Math.pow(1 - t, 4);
+
+  function spin() {
+    if (spinning) return;
+    readNames();
+    if (names.length < 1) { textarea.focus(); return; }
+
+    spinning = true;
+    spinBtn.disabled = true;
+    textarea.disabled = true;
+
+    const startRot = rotation;
+    const extraTurns = 7 + Math.floor(Math.random() * 4);   // 7–10 full turns
+    const randomOffset = Math.random() * Math.PI * 2;
+    const delta = extraTurns * Math.PI * 2 + randomOffset;
+    const t0 = performance.now();
+    let lastIdx = indexAtPointer();
+
+    function frame(now) {
+      const t = Math.min(1, (now - t0) / SPIN_MS);
+      rotation = startRot + delta * easeOut(t);
+      draw();
+      const idx = indexAtPointer();
+      if (idx !== lastIdx) { tick(); lastIdx = idx; }
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        rotation %= Math.PI * 2;
+        spinning = false;
+        spinBtn.disabled = false;
+        textarea.disabled = false;
+        showWinner(indexAtPointer());
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function showWinner(i) {
+    winnerIndex = i;
+    const name = names[i];
+    winnerNameEl.textContent = name;
+    modalHead.style.background = colorFor(i, names.length);
+    overlay.classList.add("show");
+    const li = document.createElement("li");
+    li.textContent = name;
+    resultsEl.prepend(li);
+    launchConfetti();
+  }
+
+  function closeModal() {
+    overlay.classList.remove("show");
+    winnerIndex = -1;
+  }
+
+  function removeWinner() {
+    if (winnerIndex >= 0) {
+      names.splice(winnerIndex, 1);
+      textarea.value = names.join("\n");
+      countEl.textContent = names.length;
+      draw();
+    }
+    closeModal();
+  }
+
+  // ---- confetti ----
+  const cf = document.getElementById("confetti");
+  const cfx = cf.getContext("2d");
+  let pieces = [];
+  let cfRunning = false;
+  function launchConfetti() {
+    cf.width = innerWidth; cf.height = innerHeight;
+    for (let i = 0; i < 180; i++) {
+      pieces.push({
+        x: Math.random() * cf.width,
+        y: -20 - Math.random() * cf.height * 0.5,
+        w: 6 + Math.random() * 6, h: 8 + Math.random() * 8,
+        vy: 2 + Math.random() * 4, vx: -2 + Math.random() * 4,
+        rot: Math.random() * Math.PI, vr: -0.2 + Math.random() * 0.4,
+        c: COLORS[Math.floor(Math.random() * COLORS.length)]
+      });
+    }
+    if (!cfRunning) { cfRunning = true; requestAnimationFrame(confettiFrame); }
+  }
+  function confettiFrame() {
+    cfx.clearRect(0, 0, cf.width, cf.height);
+    pieces.forEach(p => {
+      p.x += p.vx; p.y += p.vy; p.rot += p.vr; p.vy += 0.05;
+      cfx.save();
+      cfx.translate(p.x, p.y); cfx.rotate(p.rot);
+      cfx.fillStyle = p.c;
+      cfx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      cfx.restore();
+    });
+    pieces = pieces.filter(p => p.y < cf.height + 30);
+    if (pieces.length) requestAnimationFrame(confettiFrame);
+    else { cfRunning = false; cfx.clearRect(0, 0, cf.width, cf.height); }
+  }
+
+  // ---- buttons ----
+  document.getElementById("shuffleBtn").onclick = () => {
+    if (spinning) return;
+    readNames();
+    for (let i = names.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [names[i], names[j]] = [names[j], names[i]];
+    }
+    textarea.value = names.join("\n");
+    draw();
+  };
+  document.getElementById("sortBtn").onclick = () => {
+    if (spinning) return;
+    readNames();
+    names.sort((a, b) => a.localeCompare(b));
+    textarea.value = names.join("\n");
+    draw();
+  };
+  document.getElementById("clearBtn").onclick = () => {
+    if (spinning) return;
+    textarea.value = "";
+    readNames(); draw(); textarea.focus();
+  };
+
+  spinBtn.onclick = spin;
+  canvas.onclick = spin;
+  textarea.addEventListener("input", () => { readNames(); draw(); });
+  document.getElementById("closeBtn").onclick = closeModal;
+  document.getElementById("removeBtn").onclick = removeWinner;
+  overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && overlay.classList.contains("show")) closeModal();
+  });
+  window.addEventListener("resize", resize);
+
+  readNames();
+  resize();
+</script>
+</body>
+</html>
