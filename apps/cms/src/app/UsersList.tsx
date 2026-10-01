@@ -10,6 +10,7 @@ const TAG: Record<string, string> = {
   Root:  'text-sky-400 bg-sky-500/10 border-sky-500/30',
   Blog:  'text-violet-400 bg-violet-500/10 border-violet-500/30',
   Dilse: 'text-rose-400 bg-rose-500/10 border-rose-500/30',
+  Writer: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
   CMS:   'text-18-orange bg-18-orange/10 border-18-orange/30',
 };
 
@@ -158,8 +159,8 @@ This erases their account and every PFT record they own. Cannot be undone.`)) re
 
       {!loading && !err && (
         <p className="text-[11px] text-white/35 mt-3">
-          {users.length} account{users.length === 1 ? '' : 's'} · every account is a PFT signup
-          (the only app with accounts); Root / Blog / Dilse tags come from authored content.
+          {users.length} account{users.length === 1 ? '' : 's'} · PFT and Writer have sign-ups;
+          Root / Blog / Dilse tags come from authored content.
         </p>
       )}
     </div>

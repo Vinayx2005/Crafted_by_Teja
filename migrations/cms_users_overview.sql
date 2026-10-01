@@ -7,11 +7,13 @@
 -- mirror row. Listing from auth guarantees nobody is missed.
 --
 -- App association, since no table records membership directly:
---   PFT   — every account. PFT's signup is the only one across the apps
---           (root / dilse / tools are anonymous read-only sites), so holding
---           an account *is* the PFT association. Not conditioned on having
---           entered data — a signed-up user with an empty ledger is still a
---           PFT user.
+--   PFT   — every account, except ones that signed up through Writer.
+--           Not conditioned on having entered data — a signed-up user with
+--           an empty ledger is still a PFT user.
+--   Writer — has a writer.prefs row (created on first Writer sign-in).
+--           Accounts whose writer.prefs row appeared within 10 minutes of
+--           the account itself signed up via Writer, so they drop the PFT
+--           tag. Requires writer_prefs.sql to have run first.
 --   Root  — authored a blog.posts row with site='root'
 --   Blog  — authored a blog.posts row with site='pft'
 --   Dilse — authored a dilse.stories or dilse.books row
@@ -60,7 +62,14 @@ as $$
     a.created_at::timestamptz,
     a.last_sign_in_at::timestamptz,
     array_remove(array[
-      'PFT',
+      -- ponytail: signup app inferred from timing (no column records it);
+      -- store a signup_app on auth metadata if this ever misfires.
+      case when not exists (select 1 from writer.prefs w
+                            where w.user_id = a.id
+                              and w.created_at <= a.created_at + interval '10 minutes')
+           then 'PFT' end,
+      case when exists (select 1 from writer.prefs w where w.user_id = a.id)
+           then 'Writer' end,
       case when exists (select 1 from blog.posts p
                         where p.site = 'root' and lower(p.author_email) = lower(a.email::text))
            then 'Root' end,

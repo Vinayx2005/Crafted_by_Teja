@@ -31,6 +31,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--workspace", "apps/cms"],
       "port": 3004
+    },
+    {
+      "name": "writer",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "3005", "--directory", "apps/writer"],
+      "port": 3005
     }
   ]
 }
