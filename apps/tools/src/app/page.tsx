@@ -1,4 +1,4 @@
-import { ArrowRight, Dices, Gamepad2, IndianRupee, Languages } from 'lucide-react';
+import { ArrowRight, BookOpen, Dices, Gamepad2, IndianRupee } from 'lucide-react';
 
 // Static list. Add new tools here as they ship — no CMS needed until
 // the roster grows past ~5 or the descriptions start needing edits
@@ -24,11 +24,11 @@ const TOOLS = [
   },
   {
     href: 'https://writer.craftedbyteja.com',
-    title: 'Writer',
-    tagline: 'Type Indian languages in English letters.',
-    body: 'Write Telugu, Hindi and more phonetically — it converts to the script, fixes spellings and translates as you type.',
+    title: 'Writers Book Studio',
+    tagline: 'Write your book and see it as a real book.',
+    body: 'Chapter-by-chapter editor with a live A5 preview and page turns. Covers, page numbers, Indian-language translation, and PDF / Word export.',
     accent: 'from-emerald-500 to-teal-600',
-    icon: Languages,
+    icon: BookOpen,
     live: true,
   },
   {
