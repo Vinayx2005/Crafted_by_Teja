@@ -30,6 +30,27 @@ const PROJECTS = [
     tint: 'from-emerald-50 via-teal-50 to-sky-50',
   },
   {
+    title: 'Writers Book Studio',
+    text: 'Write a book chapter by chapter and watch it take shape in a live, page-turning preview.',
+    href: 'https://writer.craftedbyteja.com',
+    img: '/work-writer.svg',
+    tint: 'from-amber-50 via-orange-50 to-yellow-50',
+  },
+  {
+    title: 'Icebreaker Games',
+    text: 'Quick, free games for founders — play in the room or over a call, straight in the browser.',
+    href: 'https://games.craftedbyteja.com',
+    img: '/work-games.svg',
+    tint: 'from-indigo-50 via-purple-50 to-pink-50',
+  },
+  {
+    title: '18startup App',
+    text: 'A community for startup founders — connect, learn, share, compete, and get a shot at raising funds.',
+    href: 'https://platform.18startup.com',
+    img: '/work-18startup.svg',
+    tint: 'from-violet-50 via-fuchsia-50 to-rose-50',
+  },
+  {
     title: 'CRM',
     text: 'Contacts, pipelines and follow-ups in one place — built so nothing quietly falls through.',
     href: null,
@@ -42,13 +63,6 @@ const PROJECTS = [
     href: null,
     img: '/work-company-finance.svg',
     tint: 'from-sky-50 via-slate-50 to-indigo-50',
-  },
-  {
-    title: 'LMS',
-    text: 'A learning platform for structured courses, cohorts, and seeing who is actually progressing.',
-    href: null,
-    img: '/work-lms.svg',
-    tint: 'from-violet-50 via-fuchsia-50 to-rose-50',
   },
 ];
 
@@ -136,7 +150,8 @@ type WritingCard = {
   meta: string;
 };
 
-// Books first (newest first), then recent short stories to fill the row.
+// Books first (newest first), then every published short story. Capped at 24
+// each so the row can't balloon if the archive grows.
 async function getWriting(): Promise<WritingCard[]> {
   const [booksRes, storiesRes] = await Promise.all([
     dilse
@@ -144,13 +159,13 @@ async function getWriting(): Promise<WritingCard[]> {
       .select('id, slug, title, description, cover_url, published_at, date_display, genre')
       .not('published_at', 'is', null)
       .order('published_at', { ascending: false })
-      .limit(3),
+      .limit(24),
     dilse
       .from('stories')
       .select('id, slug, title, excerpt, cover_url, published_at, read_time, genre')
       .not('published_at', 'is', null)
       .order('published_at', { ascending: false })
-      .limit(3),
+      .limit(24),
   ]);
 
   const books = (booksRes.data || []) as DilseBook[];
@@ -168,7 +183,6 @@ async function getWriting(): Promise<WritingCard[]> {
   }));
 
   for (const s of stories) {
-    if (cards.length >= 3) break;
     cards.push({
       key: `story-${s.id}`,
       kind: 'Story',
@@ -271,9 +285,9 @@ export default async function HomePage() {
 
               <div className="absolute -bottom-6 right-0 md:-right-14 w-[118px] rotate-[7deg] bg-note shadow-sm px-4 py-4">
                 <p className="handwritten text-[17px] leading-[1.35] text-ink2">
-                  Never planned.
+                  Hey, I&apos;m from
                   <br />
-                  Just explored.
+                  Hyderabad
                 </p>
               </div>
             </div>
@@ -416,13 +430,14 @@ export default async function HomePage() {
             </a>
           </div>
 
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          {/* one sliding row: native scroll + snap, full-bleed while scrolling */}
+          <div className="slide-row flex gap-5 overflow-x-auto snap-x snap-mandatory pb-3 -mx-5 px-5 scroll-pl-5 md:-mx-8 md:px-8 md:scroll-pl-8">
             {PROJECTS.map((p) => (
               // Only the live project is a link; the rest are inert cards.
               <a
                 key={p.title}
                 href={p.href ?? undefined}
-                className={`group rounded-xl border border-line bg-card overflow-hidden transition-colors ${
+                className={`group snap-start shrink-0 w-[262px] sm:w-[280px] rounded-xl border border-line bg-card overflow-hidden transition-colors ${
                   p.href ? 'hover:border-ink/30' : 'cursor-default'
                 }`}
               >
@@ -508,12 +523,12 @@ export default async function HomePage() {
               — the latest ones show up here as they go out.
             </p>
           ) : (
-            <div className="grid md:grid-cols-[repeat(3,minmax(0,1fr))_auto] gap-5 items-start">
+            <div className="slide-row flex gap-5 overflow-x-auto snap-x snap-mandatory pb-3 -mx-5 px-5 scroll-pl-5 md:-mx-8 md:px-8 md:scroll-pl-8">
               {writing.map((w) => (
                 <a
                   key={w.key}
                   href={w.href}
-                  className="group rounded-xl border border-line bg-card overflow-hidden hover:border-ink/30 transition-colors"
+                  className="group snap-start shrink-0 w-[262px] sm:w-[280px] rounded-xl border border-line bg-card overflow-hidden hover:border-ink/30 transition-colors"
                 >
                   <img src={w.img} alt="" className="aspect-[16/9] w-full object-cover" />
                   <div className="p-4">
@@ -524,9 +539,6 @@ export default async function HomePage() {
                   </div>
                 </a>
               ))}
-              <p className="hidden lg:block handwritten w-24 pt-10 text-[19px] leading-tight text-ink2 rotate-[8deg]">
-                More thoughts here ↘
-              </p>
             </div>
           )}
         </div>
