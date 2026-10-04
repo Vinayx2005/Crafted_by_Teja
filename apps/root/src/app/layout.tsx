@@ -28,7 +28,8 @@ const NAV = [
   { label: 'Home',    href: '/' },
   { label: 'About',   href: '/#about' },   // "A little about me"
   { label: 'Work',    href: '/#build' },   // "What I do today"
-  { label: 'Writing', href: '/#writing' },
+  { label: 'Writing', href: '/#writing' },  // Dilse books and stories
+  { label: 'Blogs',   href: '/blog' },      // the published posts, in a grid
   { label: 'Tools',   href: '/#work' },    // the tech projects grid
   { label: 'Contact', href: '/#contact' },
 ];

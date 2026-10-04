@@ -3,7 +3,13 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase, BlogPost } from '@/lib/supabase';
-import { Plus, PenLine } from 'lucide-react';
+
+// Where each site serves its posts, so a published row can link to the real page.
+const LIVE_URL: Record<BlogPost['site'], (slug: string) => string> = {
+  root: (slug) => `https://www.craftedbyteja.com/blog/${slug}`,
+  pft: (slug) => `https://pft.craftedbyteja.com/blogs/${slug}`,
+};
+import { Plus, PenLine, ExternalLink } from 'lucide-react';
 
 export default function BlogList() {
   const [posts, setPosts] = useState<BlogPost[]>([]);
@@ -64,10 +70,22 @@ export default function BlogList() {
             const published = !!p.published_at;
             const scheduled = published && new Date(p.published_at!).getTime() > Date.now();
             return (
-              <li key={p.id}>
+              <li key={p.id} className="relative">
+                {published && !scheduled && p.slug && (
+                  <a
+                    href={LIVE_URL[p.site](p.slug)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute top-3 right-3 z-10 inline-flex items-center gap-1 text-[11px] font-bold text-white/60 hover:text-18-orange"
+                    title="Open the live post"
+                  >
+                    View <ExternalLink size={11} />
+                  </a>
+                )}
                 <Link
                   href={`/blog/${p.id}`}
-                  className="block bg-18-surface border border-18-border rounded-xl p-3 hover:border-18-orange/40 transition-colors"
+                  className="block bg-18-surface border border-18-border rounded-xl p-3 pr-20 hover:border-18-orange/40 transition-colors"
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-white/60 bg-white/5 border border-white/10 rounded-full px-2 py-0.5">
