@@ -15,9 +15,11 @@ let view, user;
 
 // Entry point, called once by src/app/Studio.tsx after the shell has rendered.
 let started = false;
+const me = Symbol('studio'); // this copy of the module (dev hot-reload can load a second one)
 export async function start() {
   if (started) return;
   started = true;
+  window.__studio = me;
   user = await init();
   view = $('#view');
   $('#bookFonts').href = FONT_CSS;
@@ -40,6 +42,7 @@ const failed = (what, error) => { console.error(what, error); notify(`${what} fa
 
 // ---------- state + saving ----------
 let project = null;   // { id, title, status, settings, ... }
+let ebook = null;     // published snapshot { id, published_at, updated_at } or null
 let chapters = [];    // ordered by position
 const pending = new Map(); // key → { timer, run }
 
@@ -83,10 +86,13 @@ function saveChapter(ch) {
 async function loadProject(id) {
   if (project?.id === id) return true;
   await flushAll();
-  const [{ data: p, error: e1 }, { data: cs, error: e2 }] = await Promise.all([
+  const [{ data: p, error: e1 }, { data: cs, error: e2 }, { data: eb }] = await Promise.all([
     sb.from('projects').select('*').eq('id', id).maybeSingle(),
     sb.from('chapters').select('*').eq('project_id', id).order('position'),
+    // no error check: before writer_ebooks.sql has run this just means "not published"
+    sb.from('ebooks').select('id, published_at, updated_at').eq('project_id', id).maybeSingle(),
   ]);
+  ebook = eb || null;
   if (e1 || e2) { failed('Loading the book', e1 || e2); return false; }
   if (!p) return false;
   project = { ...p, settings: withDefaults(p.settings) };
@@ -97,6 +103,10 @@ async function loadProject(id) {
 // ---------- routing ----------
 let bookView = null;
 async function route() {
+  // After a dev hot-reload an older copy of this module is still listening;
+  // only the newest one may draw, and always into the live #view.
+  if (window.__studio !== me) return;
+  view = $('#view');
   await flushAll();
   bookView?.destroy();
   bookView = null;
@@ -122,7 +132,11 @@ async function home() {
   project = null; chapters = [];
   crumbs();
   view.innerHTML = '<div class="loading">Loading your books…</div>';
-  const { data, error } = await sb.from('projects').select('id, title, status, updated_at, chapters(count)').order('updated_at', { ascending: false });
+  const [{ data, error }, { data: pub }] = await Promise.all([
+    sb.from('projects').select('id, title, status, updated_at, chapters(count)').order('updated_at', { ascending: false }),
+    sb.from('ebooks').select('id, project_id'),
+  ]);
+  const published = new Map((pub || []).map(e => [e.project_id, e.id])); // project id → ebook id
   if (error) { view.innerHTML = `<div class="loading">Could not load your books. ${esc(error.message)}</div>`; return; }
   view.innerHTML = `
     <section class="home">
@@ -132,8 +146,14 @@ async function home() {
         ${data.map(p => `
           <a class="card" href="#/p/${p.id}">
             <div class="cover">${esc(p.title)}</div>
-            <div class="meta"><b>${esc(p.title)}</b><span>${p.chapters[0]?.count || 0} pages/chapters · ${p.status === 'complete' ? 'Complete' : 'Draft'} · ${ago(p.updated_at)}</span></div>
-            <button class="btn sm icon del" data-del="${p.id}" title="Delete book" aria-label="Delete ${esc(p.title)}">✕</button>
+            <div class="meta"><b>${esc(p.title)}</b><span>${p.chapters[0]?.count || 0} pages/chapters · ${published.has(p.id) ? 'Published' : p.status === 'complete' ? 'Complete' : 'Draft'} · ${ago(p.updated_at)}</span></div>
+            <button class="btn sm icon more" data-more="${p.id}" title="More" aria-label="More options for ${esc(p.title)}" aria-haspopup="menu" aria-expanded="false">⋯</button>
+            <div class="menu" role="menu" data-menu="${p.id}">
+              ${published.has(p.id) ? `
+                <button role="menuitem" data-act="copy">Copy ebook link</button>
+                <button role="menuitem" data-act="unpublish">Unpublish book</button>` : ''}
+              <button role="menuitem" class="danger" data-act="delete">Delete book</button>
+            </div>
           </a>`).join('')}
       </div>
       ${data.length ? '' : '<p class="empty">No books yet. Start one — it is saved as a draft as you write.</p>'}
@@ -151,14 +171,62 @@ async function home() {
   };
   $('#newBook').onclick = create;
   $('#newCard').onclick = create;
-  view.querySelectorAll('[data-del]').forEach(b => b.onclick = async e => {
-    e.preventDefault(); e.stopPropagation();
-    const p = data.find(x => x.id === b.dataset.del);
-    if (!confirm(`Delete “${p.title}” and all its chapters? This cannot be undone.`)) return;
-    const { error } = await sb.from('projects').delete().eq('id', p.id);
-    if (error) return failed('Deleting the book', error);
-    home();
+  // ⋯ menu on each card (the card itself is a link, so clicks here must not navigate)
+  const closeMenus = () => view.querySelectorAll('.menu.open').forEach(m => {
+    m.classList.remove('open');
+    view.querySelector(`[data-more="${m.dataset.menu}"]`)?.setAttribute('aria-expanded', 'false');
   });
+  view.querySelectorAll('[data-more]').forEach(b => b.onclick = e => {
+    e.preventDefault(); e.stopPropagation();
+    const menu = view.querySelector(`[data-menu="${b.dataset.more}"]`);
+    const open = !menu.classList.contains('open');
+    closeMenus();
+    menu.classList.toggle('open', open);
+    b.setAttribute('aria-expanded', String(open));
+  });
+  view.querySelectorAll('.menu').forEach(m => m.onclick = async e => {
+    e.preventDefault(); e.stopPropagation();
+    const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return;
+    closeMenus();
+    const p = data.find(x => x.id === m.dataset.menu), ebookId = published.get(p.id);
+    if (act === 'copy') {
+      const url = `${location.origin}/read/${ebookId}`;
+      try { await navigator.clipboard.writeText(url); notify('Ebook link copied'); } catch { prompt('Copy this link:', url); }
+    }
+    if (act === 'unpublish') {
+      if (!await confirmBox(`Unpublish “${p.title}”?`, 'The reading link will stop working.', 'Unpublish')) return;
+      const { error } = await sb.from('ebooks').delete().eq('id', ebookId);
+      if (error) return failed('Unpublishing', error);
+      notify('Unpublished'); home();
+    }
+    if (act === 'delete') {
+      if (!await confirmBox(`Delete “${p.title}”?`, `All its chapters will be deleted${ebookId ? ' and its ebook link will stop working' : ''}. This cannot be undone.`, 'Delete book')) return;
+      const { error } = await sb.from('projects').delete().eq('id', p.id);
+      if (error) return failed('Deleting the book', error);
+      home();
+    }
+  });
+  view.querySelector('.home').addEventListener('click', e => { if (!e.target.closest('.menu, [data-more]')) closeMenus(); });
+  view.querySelector('.home').addEventListener('keydown', e => { if (e.key === 'Escape') closeMenus(); });
+}
+
+// In-app "are you sure?" — the browser's confirm() is blocked in some embedded
+// browsers (and looks out of place). Resolves true only on the confirm button.
+function confirmBox(title, text, okLabel) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'ask';
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h3>${esc(title)}</h3>
+      <p style="font-size:13px">${esc(text)}</p>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" value="cancel" autofocus>Cancel</button>
+        <button class="btn primary danger-fill" value="ok">${esc(okLabel)}</button>
+      </div>
+    </form>`;
+  document.body.append(dlg);
+  dlg.showModal();
+  return new Promise(res => dlg.addEventListener('close', () => { res(dlg.returnValue === 'ok'); dlg.remove(); }));
 }
 
 // New-book popup. Resolves to the author name ('' is fine), or null if cancelled.
@@ -391,6 +459,11 @@ function projectView() {
           </div>
         </details>
 
+        <details class="panel" open>
+          <summary>Publish as a free ebook</summary>
+          <div class="pb" id="pubBox"></div>
+        </details>
+
         <div class="panel">
           <div class="ph"><b>Download the whole book</b></div>
           <div class="pb">
@@ -433,7 +506,8 @@ function projectView() {
     saveProject(); refreshSoon();
   });
   $('#bookAuthor').oninput = e => { s.author = e.target.value.trim(); saveProject(); refreshSoon(); };
-  $('#bookStatus').onchange = e => { project.status = e.target.value; saveProject(); };
+  $('#bookStatus').onchange = e => { project.status = e.target.value; saveProject(); renderPublish(); };
+  renderPublish();
   view.querySelectorAll('[data-pn]').forEach(el => el.oninput = el.onchange = () => {
     const k = el.dataset.pn;
     pn[k] = el.type === 'checkbox' ? el.checked : (k === 'size' || k === 'start') ? Math.max(1, +el.value || 1) : el.value;
@@ -489,7 +563,7 @@ function renderChapterList() {
     }
     if (b.dataset.rm) {
       const c = chapters[+b.dataset.rm];
-      if (c.kind === 'chapter' && !confirm(`Delete “${c.title || 'Untitled chapter'}”? This cannot be undone.`)) return;
+      if (c.kind === 'chapter' && !await confirmBox(`Delete “${c.title || 'Untitled chapter'}”?`, 'This cannot be undone.', 'Delete chapter')) return;
       const { error } = await sb.from('chapters').delete().eq('id', c.id);
       if (error) return failed('Deleting', error);
       chapters = chapters.filter(x => x !== c);
@@ -506,6 +580,73 @@ async function addItem(kind) {
   chapters.push(data);
   if (kind === 'chapter') location.hash = `#/p/${project.id}/c/${data.id}`;
   else { renderChapterList(); refresh(); notify('Empty page added at the end — use the arrows to move it'); }
+}
+
+// ---------- publishing ----------
+const readUrl = () => `${location.origin}/read/${ebook.id}`;
+function renderPublish() {
+  const box = $('#pubBox'); if (!box) return;
+  const when = iso => new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  if (!ebook) {
+    const ready = project.status === 'complete';
+    box.innerHTML = `
+      <span style="font-size:13px">Anyone with the link can read it free, like a real book — no sign-in needed.</span>
+      <div class="row"><button class="btn primary" id="pubGo" ${ready ? '' : 'disabled'}>Publish</button></div>
+      ${ready ? '' : '<span style="font-size:12px;color:var(--muted)">Set the status above to <b>Complete</b> to publish.</span>'}`;
+    $('#pubGo').onclick = () => publish($('#pubGo'));
+    return;
+  }
+  box.innerHTML = `
+    <span style="font-size:13px">Published ${when(ebook.published_at)}${ebook.updated_at !== ebook.published_at ? ` · updated ${when(ebook.updated_at)}` : ''}. Readers see this version until you update it.</span>
+    <input class="in" id="pubLink" value="${esc(readUrl())}" readonly aria-label="Reading link">
+    <div class="row">
+      <button class="btn primary" id="pubShare">Share link</button>
+      <a class="btn" href="${esc(readUrl())}" target="_blank" rel="noopener">Open</a>
+      <button class="btn" id="pubUpdate" title="Replace the published copy with the book as it is now">Update published version</button>
+      <button class="btn danger" id="pubOff">Unpublish</button>
+    </div>`;
+  $('#pubLink').onclick = e => e.target.select();
+  $('#pubShare').onclick = () => shareLink(project.title, readUrl());
+  $('#pubUpdate').onclick = () => publish($('#pubUpdate'));
+  $('#pubOff').onclick = async () => {
+    if (!await confirmBox('Unpublish this book?', 'The reading link will stop working.', 'Unpublish')) return;
+    const { error } = await sb.from('ebooks').delete().eq('id', ebook.id);
+    if (error) return failed('Unpublishing', error);
+    ebook = null; renderPublish(); notify('Unpublished');
+  };
+}
+
+export async function shareLink(title, url) {
+  if (navigator.share) { try { await navigator.share({ title, url }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(url); notify('Link copied'); } catch { prompt('Copy this link:', url); }
+}
+
+// Saves a snapshot of the book exactly as the preview shows it (translated
+// text included), so later draft edits don't change what readers see.
+async function publish(btn) {
+  btn.disabled = true;
+  const label = btn.textContent; btn.textContent = 'Publishing…';
+  try {
+    await flushAll();
+    await refresh();
+    const s = project.settings;
+    const book = {
+      settings: s,
+      tagline: taglineHtml(),
+      chapters: lastFlow.map(c => ({ id: c.id, kind: c.kind, title: c.title, html: c.html })),
+    };
+    const now = nowIso();
+    const row = { project_id: project.id, title: project.title, book, updated_at: now, ...(ebook ? {} : { published_at: now }) };
+    const { data, error } = await sb.from('ebooks').upsert(row, { onConflict: 'project_id' }).select('id, published_at, updated_at').single();
+    if (error) throw error;
+    const first = !ebook;
+    ebook = data;
+    renderPublish();
+    notify(first ? 'Published — share the link with your readers' : 'Published version updated');
+  } catch (e) {
+    failed('Publishing', e);
+    btn.disabled = false; btn.textContent = label;
+  }
 }
 
 async function doExport(kind, btn) {

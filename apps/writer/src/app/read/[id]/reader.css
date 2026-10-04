@@ -1,0 +1,17 @@
+/* Public ebook reader — the book gets the whole screen. */
+.r-top { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.r-head { flex: 1; min-width: 0; }
+.r-head h1 { margin: 0; font: 600 16px/1.3 "Times New Roman", serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r-head span { display: block; font-size: 12px; color: var(--muted); font-variant: small-caps; letter-spacing: .04em; }
+.r-book { flex: 1; min-height: 0; position: relative; }
+.r-msg { margin: auto; max-width: 320px; text-align: center; color: var(--muted); }
+.r-hint {
+  position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); margin: 0; z-index: 5;
+  background: rgba(0,0,0,.72); color: #fff; font-size: 12px; padding: 6px 12px; border-radius: 999px;
+  opacity: 0; transition: opacity .4s; pointer-events: none; white-space: nowrap;
+}
+.r-hint.show { opacity: 1; }
+.r-foot { text-align: center; font-size: 11px; color: var(--faint); padding: 0 0 8px; background: var(--desk); }
+.r-foot a { color: var(--muted); }
+/* the reader page never has the editor's two-pane layout */
+@media (max-width: 900px) { .r-book { height: auto; } }
