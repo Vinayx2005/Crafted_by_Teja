@@ -1,970 +1,193 @@
 <!DOCTYPE html>
-<html lang="te">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Indian AI Translator</title>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Telugu:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<title>Book Studio · Crafted by Teja</title>
+<meta name="description" content="Write books chapter by chapter with a live A5 preview, page numbers, running headers and Indian-language translation.">
+<script>document.documentElement.dataset.theme = (() => { try { return localStorage.getItem('writer_theme'); } catch {} })() || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link id="bookFonts" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css">
+<link rel="stylesheet" href="common.css">
+<link rel="stylesheet" href="book.css">
 <style>
-  :root {
-    --bg: #000;
-    --panel: #0c0c0c;
-    --panel2: #141414;
-    --border: #262626;
-    --text: #f2f2f2;
-    --muted: #8a8a8a;
-    --faint: #555;
-    --accent: #f5b301;
-    --ok: #3ddc84;
-    --bad: #e5484d;
-    --fs: 22px;
-    --script: "Noto Sans Telugu", "Nirmala UI", "Noto Sans", sans-serif;
-  }
   * { box-sizing: border-box; }
-  html, body { margin: 0; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: Inter, system-ui, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-  button, select { font: inherit; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 Inter, system-ui, sans-serif; display: flex; flex-direction: column; }
+  button, input, select { font: inherit; color: inherit; }
+  a { color: inherit; }
 
-  header {
-    padding: 18px 24px 6px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  header h1 { margin: 0; font-size: 21px; font-weight: 600; }
-  header h1 span { color: var(--accent); font-family: var(--script); }
-
-  .route { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .field { display: flex; flex-direction: column; gap: 3px; }
-  .field label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding-left: 2px; }
-  .langsel {
-    background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 10px;
-    padding: 8px 12px; font-size: 14px; cursor: pointer; outline: none;
-    font-family: Inter, "Nirmala UI", "Noto Sans Telugu", sans-serif;
-    min-width: 190px;
-  }
-  .langsel:focus, .langsel:hover { border-color: var(--accent); }
-  #langSel { border-color: var(--accent); }
-  .langsel option { background: #111; }
-  .swap {
-    align-self: flex-end;
-    background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 10px;
-    width: 38px; height: 38px; cursor: pointer; font-size: 17px;
-  }
-  .swap:hover { border-color: var(--accent); color: var(--accent); }
-
-  .quick { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 4px 24px 0; }
-  .quick .ql { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; min-width: 38px; }
-  .quick button {
-    background: transparent; border: 1px solid var(--border); color: var(--muted);
-    border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer;
-    font-family: Inter, "Nirmala UI", sans-serif;
-  }
-  .quick button:hover { color: var(--text); border-color: #444; }
-  .quick button.active { color: #000; background: var(--accent); border-color: var(--accent); }
-  .quick.from button.active { background: var(--text); border-color: var(--text); }
-
-  main {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    padding: 12px 24px 8px;
-  }
-  .box {
-    display: flex; flex-direction: column;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    min-height: 56vh;
-  }
-  .box:focus-within { border-color: #3a3a3a; }
-  .head {
-    display: flex; justify-content: space-between; align-items: center; gap: 8px;
-    padding: 8px 10px 8px 14px;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px; color: var(--muted);
-    min-height: 46px;
-  }
-  .head b { color: var(--text); font-weight: 600; font-family: Inter, "Nirmala UI", sans-serif; }
-  .tools { display: flex; gap: 6px; align-items: center; }
-  .ibtn {
-    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-    background: var(--panel2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px;
-    height: 30px; min-width: 30px; padding: 0 9px;
-    font-size: 12px; cursor: pointer;
-  }
-  .ibtn:hover { border-color: var(--accent); color: var(--accent); }
-  .ibtn.live { border-color: var(--bad); color: var(--bad); animation: pulse 1s infinite; }
-  @keyframes pulse { 50% { opacity: .5; } }
-  .ibtn svg { width: 15px; height: 15px; }
-
-  textarea, .output {
-    flex: 1; width: 100%;
-    background: transparent; color: var(--text);
-    border: 0; outline: none; resize: none;
-    padding: 16px;
-    font-size: var(--fs); line-height: 1.75;
-    white-space: pre-wrap; word-wrap: break-word;
-    overflow-y: auto;
-    min-height: 200px;
-  }
-  textarea { font-family: Inter, "Nirmala UI", system-ui, sans-serif; font-size: calc(var(--fs) - 2px); }
-  textarea::placeholder { color: var(--faint); }
-  .output { font-family: var(--script); }
-  .output:empty::before { content: attr(data-empty); color: var(--faint); }
-  .w { cursor: pointer; border-radius: 4px; padding: 0 1px; }
-  .w:hover { background: #1f1f1f; }
-  .w.fixed { text-decoration: underline dotted var(--ok) 2px; text-underline-offset: 6px; }
-  .w.mine { text-decoration: underline dotted var(--accent) 2px; text-underline-offset: 6px; }
-  .w.active { background: #2a2208; outline: 1px solid var(--accent); }
-
-  .strip {
-    border-top: 1px solid var(--border);
-    padding: 10px 14px;
-    min-height: 54px;
-    font-size: 14px;
-  }
-  .strip .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
-  .sugs { display: flex; flex-wrap: wrap; gap: 6px; }
-  .sug {
-    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-    border-radius: 8px; padding: 4px 10px; cursor: pointer;
-    font-family: var(--script); font-size: 17px;
-    display: inline-flex; align-items: center; gap: 6px;
-  }
-  .sug:hover { border-color: var(--accent); }
-  .sug.cur { border-color: var(--accent); color: var(--accent); }
-  .sug.best { border-color: var(--ok); }
-  .sug small { font-family: Inter, sans-serif; font-size: 10px; color: var(--muted); }
-  .hint { color: var(--faint); font-size: 13px; }
-  .meaning { color: #cfcfcf; }
-  .dym { color: var(--muted); }
-  .dym a { color: var(--accent); cursor: pointer; text-decoration: underline; }
-  .teline { font-family: var(--script); font-size: 18px; line-height: 1.7; margin-bottom: 6px; white-space: pre-wrap; }
-  .teline:empty { display: none; }
-  .roman { color: var(--muted); font-style: italic; }
-
-  .bar {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
-    padding: 6px 24px 10px; font-size: 13px; color: var(--muted);
-  }
-  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
-  .switch input { display: none; }
-  .switch i { width: 34px; height: 19px; border-radius: 10px; background: #333; position: relative; transition: .2s; }
-  .switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #999; transition: .2s; }
-  .switch input:checked + i { background: var(--ok); }
-  .switch input:checked + i::after { left: 17px; background: #000; }
-  .sep { width: 1px; height: 18px; background: var(--border); }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
-  .dot.on { background: var(--ok); } .dot.off { background: var(--bad); } .dot.busy { background: var(--accent); }
+  .top { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .brand { font-size: 18px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .brand span { color: var(--accent); }
+  .crumbs { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; min-width: 0; }
+  .crumbs a { text-decoration: none; } .crumbs a:hover { color: var(--accent); }
+  .crumbs b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
   .spacer { flex: 1; }
+  #who { color: var(--muted); font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .legend { margin: 0 24px 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
-  .lg-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; }
-  .legend ul { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 2px 20px; }
-  .legend li { font-size: 13px; color: var(--muted); padding: 4px 6px; border-radius: 6px; cursor: pointer; }
-  .legend li::before { content: "•"; color: var(--accent); margin-right: 8px; }
-  .legend li b { color: var(--text); font-weight: 600; }
-  .legend li:hover { background: var(--panel2); }
-  .legend li.active { background: #2a2208; }
-  .legend li.active b { color: var(--accent); }
-
-  .disclaimer { margin: 0 24px 20px; padding: 0 4px; font-size: 12px; line-height: 1.6; color: var(--muted); }
-  .disclaimer b { color: var(--text); font-weight: 600; }
-
-  #history {
-    margin: 0 24px 20px; border: 1px solid var(--border); border-radius: 12px;
-    background: var(--panel); display: none;
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; cursor: pointer; text-decoration: none; white-space: nowrap;
   }
-  #history.open { display: block; }
-  #history .hl { max-height: 280px; overflow-y: auto; }
-  .hi { padding: 10px 14px; border-top: 1px solid var(--border); cursor: pointer; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 14px; }
-  .hi:hover { background: var(--panel2); }
-  .hi .te { font-family: var(--script); }
-  .hi .en { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); color: var(--on-accent); }
+  .btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
+  .btn.icon { width: 28px; padding: 0; }
+  .btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+  .btn:disabled { opacity: .4; cursor: default; pointer-events: none; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  .toast {
-    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
-    background: var(--accent); color: #000; padding: 8px 16px; border-radius: 8px;
-    font-size: 13px; font-weight: 500; opacity: 0; transition: .2s; pointer-events: none;
+  #view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .loading { margin: auto; color: var(--muted); }
+
+  /* ---------- home ---------- */
+  .home { width: 100%; max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; overflow-y: auto; }
+  .home-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  .home-head h2 { margin: 0; font-size: 22px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 18px; }
+  .card { position: relative; display: flex; flex-direction: column; text-decoration: none; }
+  .cover {
+    aspect-ratio: 148 / 210; border-radius: 4px 10px 10px 4px; padding: 18px 16px; display: flex; flex-direction: column; justify-content: center; text-align: center;
+    background: linear-gradient(90deg, rgba(0,0,0,.18) 0 5px, transparent 5px), #fffdf8; color: #1a1a1a;
+    box-shadow: 0 1px 2px rgba(0,0,0,.25), 0 8px 24px rgba(0,0,0,.18); transition: transform .15s;
+    font-family: "Times New Roman", serif; font-size: 20px; overflow: hidden; overflow-wrap: anywhere;
   }
-  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  kbd { background: #1c1c1c; border: 1px solid #333; border-radius: 4px; padding: 0 4px; font-size: 11px; }
+  .card:hover .cover { transform: translateY(-3px); }
+  .card .meta { margin-top: 10px; font-size: 13px; }
+  .card .meta b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .meta span { color: var(--muted); font-size: 12px; }
+  .card .del { position: absolute; top: 8px; right: 8px; opacity: 0; background: #fffdf8; color: #333; }
+  .card:hover .del, .card .del:focus-visible { opacity: 1; }
+  .new-card .cover { background: transparent; border: 2px dashed var(--border); box-shadow: none; color: var(--muted); font-family: Inter, sans-serif; font-size: 15px; cursor: pointer; }
+  .new-card:hover .cover { border-color: var(--accent); color: var(--accent); }
+  .empty { color: var(--muted); margin-top: 8px; }
 
-  /* ---------- Sign-in ---------- */
-  #auth { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: none; overflow-y: auto; padding: 16px; }
-  #auth.open { display: flex; }
-  .auth-card { margin: auto; width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
-  .auth-card h2 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
-  .auth-card h2 span { color: var(--accent); font-family: var(--script); }
-  .auth-card p { margin: 0 0 18px; font-size: 13px; color: var(--muted); }
-  .auth-card input {
-    width: 100%; margin-bottom: 10px; padding: 10px 12px; font: inherit; font-size: 14px;
-    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; outline: none;
+  /* ---------- workspace (project + chapter) ---------- */
+  .work { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(0, 1.25fr); }
+  .side { min-height: 0; overflow-y: auto; border-right: 1px solid var(--border); padding: 18px 20px 40px; display: flex; flex-direction: column; gap: 18px; }
+  .side.editor { padding: 0; gap: 0; overflow: hidden; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .in, .sel {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; outline: none; min-width: 0;
   }
-  .auth-card input:focus { border-color: var(--accent); }
-  .abtn { width: 100%; padding: 10px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--border); }
-  .abtn.google { background: #fff; color: #111; border-color: #fff; display: flex; align-items: center; justify-content: center; gap: 8px; }
-  .abtn.primary { background: var(--accent); color: #000; border-color: var(--accent); }
-  .abtn:disabled { opacity: .5; cursor: default; }
-  .or { display: flex; align-items: center; gap: 10px; margin: 16px 0; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
-  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
-  #authMsg { min-height: 18px; margin: 2px 0 10px; font-size: 12px; color: var(--bad); }
-  #authMsg.ok { color: var(--ok); }
-  .auth-switch { margin-top: 14px; text-align: center; font-size: 13px; color: var(--muted); }
-  .auth-switch a { color: var(--accent); cursor: pointer; }
-  #who { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .in:focus, .sel:focus { border-color: var(--accent); }
+  .in.title { font-size: 20px; font-weight: 600; padding: 8px 10px; background: transparent; border-color: transparent; }
+  .in.title:hover, .in.title:focus { border-color: var(--border); background: var(--panel2); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+  .panel > .ph { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .panel > .ph b { font-weight: 600; font-size: 13px; }
+  .panel > .pb { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  details.panel > summary { list-style: none; cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: 13px; display: flex; justify-content: space-between; }
+  details.panel > summary::after { content: "▾"; color: var(--muted); }
+  details.panel[open] > summary { border-bottom: 1px solid var(--border); }
+  details.panel[open] > summary::after { content: "▴"; }
+  .panel > .pb.setgrid, .setgrid { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; font-size: 13px; }
+  .setgrid .sub { grid-column: 1 / -1; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 6px; }
+  .setgrid input[type=range] { width: 100%; accent-color: var(--accent); }
+  .chk { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+  .chk input { accent-color: var(--accent); width: 15px; height: 15px; }
 
-  @media (max-width: 760px) {
-    header, .bar { padding-left: 16px; padding-right: 16px; }
-    .quick { padding-left: 16px; padding-right: 16px; }
-    main { grid-template-columns: 1fr; padding: 10px 16px; }
-    .box { min-height: 34vh; }
-    #history { margin: 0 16px 16px; }
-    .legend { margin: 0 16px 12px; }
-    .disclaimer { margin: 0 16px 16px; }
-    .hi { grid-template-columns: 1fr; gap: 2px; }
-    .route { width: 100%; }
-    .field { flex: 1; }
-    .langsel { min-width: 0; width: 100%; }
+  .chapters { list-style: none; margin: 0; padding: 0; }
+  .chapters li { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); }
+  .chapters li:first-child { border-top: 0; }
+  .chapters li:hover { background: var(--panel2); }
+  .chapters .n { color: var(--faint); font-size: 12px; width: 22px; text-align: right; flex: none; }
+  .chapters .t { flex: 1; min-width: 0; text-decoration: none; }
+  .chapters .t b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chapters .t span { font-size: 12px; color: var(--muted); }
+  .chapters .t:hover b { color: var(--accent); }
+  .chapters .blank .t b { color: var(--muted); font-style: italic; }
+  .chapters .acts { display: flex; gap: 4px; opacity: .55; }
+  .chapters li:hover .acts, .chapters .acts:focus-within { opacity: 1; }
+
+  /* editor */
+  .ed-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+  .ed-head .in.title { font-size: 18px; }
+  .tr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  .tr-bar .sel { padding: 4px 8px; font-size: 13px; color: var(--text); }
+  .tr-bar.on { color: var(--text); }
+  .ed-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .ed-foot { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  #saveState.dirty { color: var(--accent); }
+
+  /* Quill, themed */
+  .ql-toolbar.ql-snow { border: 0; border-bottom: 1px solid var(--border); padding: 6px 10px; background: var(--panel); font-family: Inter, sans-serif; }
+  .ql-container.ql-snow { border: 0; flex: 1; min-height: 0; overflow-y: auto; font-family: var(--bf); }
+  .ql-snow .ql-stroke { stroke: var(--text); }
+  .ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill { fill: var(--text); }
+  .ql-snow .ql-picker { color: var(--text); }
+  .ql-snow .ql-picker-options { background: var(--panel); border-color: var(--border) !important; max-height: 280px; overflow-y: auto; }
+  .ql-snow.ql-toolbar button:hover .ql-stroke, .ql-snow .ql-toolbar button:hover .ql-stroke,
+  .ql-snow.ql-toolbar button.ql-active .ql-stroke, .ql-snow.ql-toolbar .ql-picker-label:hover .ql-stroke,
+  .ql-snow.ql-toolbar .ql-picker-label.ql-active .ql-stroke { stroke: var(--accent); }
+  .ql-snow.ql-toolbar button:hover .ql-fill, .ql-snow.ql-toolbar button.ql-active .ql-fill { fill: var(--accent); }
+  .ql-snow.ql-toolbar button:hover, .ql-snow.ql-toolbar button.ql-active,
+  .ql-snow.ql-toolbar .ql-picker-label:hover, .ql-snow.ql-toolbar .ql-picker-label.ql-active,
+  .ql-snow.ql-toolbar .ql-picker-item:hover, .ql-snow.ql-toolbar .ql-picker-item.ql-selected { color: var(--accent); }
+  .ql-snow .ql-picker.ql-font { width: 132px; }
+  .ql-snow .ql-picker.ql-size { width: 70px; }
+  .ql-snow .ql-picker.ql-lineheight { width: 86px; }
+  .ql-snow .ql-picker.ql-header { width: 96px; }
+  .ql-snow .ql-picker-label { overflow: hidden; white-space: nowrap; }
+  .ql-editor {
+    padding: 22px 26px 80px; color: var(--text); text-align: justify;
+    font-family: var(--bf); font-size: var(--bs); line-height: var(--lh);
+  }
+  .ql-editor p { margin: 0 0 var(--ps); }
+  .ql-editor h1, .ql-editor h2, .ql-editor h3 { text-align: left; margin: .8em 0 .4em; line-height: 1.25; }
+  .ql-editor img { max-width: 100%; display: block; margin: .4em auto; }
+  .ql-editor.ql-blank::before { color: var(--faint); font-style: normal; left: 26px; }
+  .ql-snow .ql-tooltip { background: var(--panel); color: var(--text); border-color: var(--border); box-shadow: 0 4px 16px rgba(0,0,0,.3); z-index: 5; }
+  .ql-snow .ql-tooltip input[type=text] { background: var(--panel2); color: var(--text); border-color: var(--border); }
+
+  /* preview */
+  .preview { min-height: 0; display: flex; flex-direction: column; background: var(--desk); }
+  .pv-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; font-size: 12px; }
+  .pv-bar .sel { padding: 4px 6px; font-size: 12px; }
+  .pv-bar label { color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .stage { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 12px; }
+  .stage .flipbook { margin: auto; }
+  .stage .page { background: #fffdf8; overflow: hidden; }
+  .stage .page .bp-inner { box-shadow: inset 0 0 30px rgba(0,0,0,.05); }
+  .pv-nav { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px; font-size: 12px; color: var(--muted); }
+  .pv-busy { position: absolute; top: 10px; right: 14px; font-size: 12px; color: var(--muted); display: none; }
+  .pv-busy.on { display: block; }
+
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    .work { grid-template-columns: 1fr; }
+    .side { border-right: 0; border-bottom: 1px solid var(--border); overflow: visible; }
+    .side.editor { height: 80vh; }
+    .preview { height: 80vh; }
+    .top { padding: 10px 16px; }
+    .home { padding: 20px 16px 40px; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
+    .card .del { opacity: 1; }
+    #who { display: none; }
   }
 </style>
 </head>
 <body>
-<div id="auth">
-  <form class="auth-card" id="authForm">
-    <h2>Crafted by <span>Teja</span></h2>
-    <p id="authSub">Sign in to keep your saved words on every device.</p>
-    <button type="button" class="abtn google" id="googleBtn">
-      <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
-      Continue with Google
-    </button>
-    <div class="or">or</div>
-    <input type="email" id="authEmail" placeholder="Email" autocomplete="email" required>
-    <input type="password" id="authPass" placeholder="Password" autocomplete="current-password" minlength="6" required>
-    <div id="authMsg" role="status"></div>
-    <button type="submit" class="abtn primary" id="authSubmit">Sign in</button>
-    <div class="auth-switch"><span id="switchText">New here?</span> <a id="switchLink">Create an account</a></div>
-  </form>
-</div>
-
-<header>
-  <h1>Crafted by <span>Teja</span></h1>
-  <div class="route">
-    <div class="field">
-      <label for="srcSel">I'm typing in</label>
-      <select id="srcSel" class="langsel"></select>
-    </div>
-    <button class="swap" id="swapBtn" title="Swap languages">⇄</button>
-    <div class="field">
-      <label for="langSel">Translate to</label>
-      <select id="langSel" class="langsel"></select>
-    </div>
-  </div>
-</header>
-<div class="quick from" id="quickFrom"></div>
-<div class="quick" id="quick"></div>
-
-<main>
-  <section class="box">
-    <div class="head">
-      <b id="inLabel">Type Telugu in English letters</b>
-      <div class="tools">
-        <button class="ibtn" id="micBtn" title="Voice typing">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-        </button>
-        <button class="ibtn" id="clearBtn" title="Clear">Clear</button>
-      </div>
-    </div>
-    <textarea id="input" spellcheck="false" autofocus></textarea>
-    <div class="strip" id="sugStrip">
-      <div class="lbl"><span id="sugLabel">Suggestions</span><span id="kbdHint"><kbd>Alt</kbd>+<kbd>1-8</kbd> to pick</span></div>
-      <div class="sugs" id="sugs"></div>
-    </div>
-  </section>
-
-  <section class="box">
-    <div class="head">
-      <b id="outLabel">తెలుగు</b>
-      <div class="tools">
-        <button class="ibtn" id="speakBtn" title="Listen">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/></svg>
-        </button>
-        <button class="ibtn" id="copyBtn" title="Copy">Copy</button>
-        <button class="ibtn" id="dlBtn" title="Download as .txt">Save</button>
-      </div>
-    </div>
-    <div id="output" class="output"></div>
-    <div class="strip">
-      <div class="lbl"><span id="meaningLabel">English meaning</span></div>
-      <div id="teLine" class="teline"></div>
-      <div id="meaning" class="meaning"><span class="hint">—</span></div>
-    </div>
-  </section>
-</main>
-
-<div class="bar">
-  <label class="switch" title="Fix spelling using full-sentence context"><input type="checkbox" id="acToggle" checked><i></i>Auto-correct</label>
-  <span class="sep"></span>
-  <span>Size</span>
-  <button class="ibtn" id="fsDown">A−</button>
-  <button class="ibtn" id="fsUp">A+</button>
-  <span class="sep"></span>
-  <span id="counts">0 words · 0 chars</span>
-  <span class="sep"></span>
-  <span id="myWords"></span>
+<header class="top">
+  <a class="brand" href="#/">Crafted by <span>Teja</span></a>
+  <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
   <span class="spacer"></span>
-  <button class="ibtn" id="histBtn">History</button>
+  <a class="btn" href="translator.html">Translator</a>
+  <button class="btn" data-theme-toggle aria-label="Toggle theme"></button>
   <span id="who"></span>
-  <button class="ibtn" id="logoutBtn">Log out</button>
-  <span><span id="dot" class="dot on"></span><span id="status">AI Live</span></span>
-</div>
+  <button class="btn" id="logoutBtn">Log out</button>
+</header>
+<main id="view"><div class="loading">Loading…</div></main>
 
-<section class="legend">
-  <div class="lg-title">What do these names mean?</div>
-  <ul id="legend"></ul>
-</section>
-
-<p class="disclaimer">
-  <b>Disclaimer:</b> Your saved words, history and settings are stored in your account so they follow you across devices. You can clear them anytime.
-  To translate and correct spellings, your text is sent to Google's translation services.
-</p>
-
-<section id="history">
-  <div class="head"><b>History</b><div class="tools"><button class="ibtn" id="histClear">Clear history</button></div></div>
-  <div class="hl" id="histList"></div>
-</section>
-
-<div class="toast" id="toast"></div>
-
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-(async () => {
-  const $ = id => document.getElementById(id);
-  const input = $('input'), output = $('output'), sugsEl = $('sugs'), meaningEl = $('meaning'), nativeLine = $('teLine');
-
-  // ---------- account ----------
-  // Same Supabase project as the other apps; the anon key is public by design,
-  // writer.prefs RLS limits every row to its owner.
-  const sb = supabase.createClient(
-    'https://nqgflcoqfrqzelzduuhs.supabase.co',
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xZ2ZsY29xZnJxemVsemR1dWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNjU0MzcsImV4cCI6MjA5OTg0MTQzN30.Ud7l_jg_uNMrf_IROo6SAByPY6E1m3O0obcXlL4O9hk',
-    { db: { schema: 'writer' } }
-  );
-
-  const user = await (async () => {
-    const { data: { session } } = await sb.auth.getSession();
-    if (session) return session.user;
-    $('auth').classList.add('open');
-    let signUp = false;
-    const msg = (t, ok) => { $('authMsg').textContent = t; $('authMsg').className = ok ? 'ok' : ''; };
-    $('switchLink').onclick = () => {
-      signUp = !signUp; msg('');
-      $('authSubmit').textContent = signUp ? 'Create account' : 'Sign in';
-      $('switchText').textContent = signUp ? 'Have an account?' : 'New here?';
-      $('switchLink').textContent = signUp ? 'Sign in' : 'Create an account';
-      $('authPass').autocomplete = signUp ? 'new-password' : 'current-password';
-    };
-    $('googleBtn').onclick = async () => {
-      const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } });
-      if (error) msg(error.message);
-    };
-    $('authForm').onsubmit = async e => {
-      e.preventDefault();
-      $('authSubmit').disabled = true; msg('');
-      const creds = { email: $('authEmail').value.trim(), password: $('authPass').value };
-      const { data, error } = signUp ? await sb.auth.signUp({ ...creds, options: { emailRedirectTo: location.origin } })
-                                     : await sb.auth.signInWithPassword(creds);
-      $('authSubmit').disabled = false;
-      if (error) return msg(error.message);
-      if (signUp && !data.session) msg('Check your email to confirm your account, then sign in.', true);
-    };
-    return new Promise(res => sb.auth.onAuthStateChange((_, s) => { if (s) { $('auth').classList.remove('open'); res(s.user); } }));
-  })();
-
-  $('who').textContent = user.email || '';
-  $('who').title = user.email || '';
-
-  // ---------- storage: one jsonb blob per user in writer.prefs ----------
-  const KEYS = ['tr_src', 'te_tgt', 'te_ac', 'te_fs', 'te_hist', 'te_words'];
-  const { data: row, error: loadErr } = await sb.from('prefs').select('data').eq('user_id', user.id).maybeSingle();
-  if (loadErr) { console.error('Could not load saved data', loadErr); setTimeout(() => toast('Could not load your saved words, so changes will not be saved'), 0); }
-  let prefs = row?.data;
-  if (!prefs) {
-    // First sign-in: carry over anything this browser saved before accounts existed.
-    prefs = {};
-    for (const k of KEYS) { try { const v = localStorage.getItem(k); if (v) prefs[k] = JSON.parse(v); } catch {} }
-  }
-  let saveTimer = null;
-  const save = () => {
-    clearTimeout(saveTimer); saveTimer = null;
-    if (loadErr) return Promise.resolve(); // never overwrite data we failed to read
-    return sb.from('prefs').upsert({ user_id: user.id, data: prefs, updated_at: new Date().toISOString() })
-      .then(({ error }) => { if (error) { console.error('Save failed', error); toast('Could not save — check your connection'); } });
-  };
-  if (!row && !loadErr) save(); // creates the row so the account shows as a Writer user in the CMS
-  const store = {
-    get(k, d) { return k in prefs ? prefs[k] : d; },
-    set(k, v) { prefs[k] = v; clearTimeout(saveTimer); saveTimer = setTimeout(save, 600); }
-  };
-  addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && saveTimer) save(); });
-
-  $('logoutBtn').onclick = async () => {
-    if (saveTimer) await save();
-    await sb.auth.signOut();
-    location.reload();
-  };
-
-  // ---------- Languages ----------
-  // [code, English name, native name, Google Input Tools code (null = cannot type phonetically), example]
-  const LANGS = [
-    ['te', 'Telugu', 'తెలుగు', 'te', 'nenu bagunnanu, meeru ela unnaru?'],
-    ['hi', 'Hindi', 'हिन्दी', 'hi', 'aap kaise ho? mera naam rahul hai'],
-    ['ta', 'Tamil', 'தமிழ்', 'ta', 'vanakkam, eppadi irukkeenga?'],
-    ['kn', 'Kannada', 'ಕನ್ನಡ', 'kn', 'namaskara, hegiddira?'],
-    ['ml', 'Malayalam', 'മലയാളം', 'ml', 'namaskaram, sukhamano?'],
-    ['mr', 'Marathi', 'मराठी', 'mr', 'namaskar, tumhi kase aahat?'],
-    ['bn', 'Bengali', 'বাংলা', 'bn', 'nomoskar, tumi kemon acho?'],
-    ['gu', 'Gujarati', 'ગુજરાતી', 'gu', 'kem cho? majama cho?'],
-    ['pa', 'Punjabi', 'ਪੰਜਾਬੀ', 'pa', 'sat sri akal, ki haal hai?'],
-    ['or', 'Odia', 'ଓଡ଼ିଆ', 'or', 'namaskar, apana kemiti achanti?'],
-    ['ur', 'Urdu', 'اردو', 'ur', 'aap kaise hain?'],
-    ['as', 'Assamese', 'অসমীয়া', 'as', 'namaskar, apuni kene ase?'],
-    ['en', 'English', 'English', null, 'how are you doing today?'],
-    ['sa', 'Sanskrit', 'संस्कृतम्', 'sa', 'namaskaram, bhavan katham asti?'],
-    ['gom', 'Konkani', 'कोंकणी', 'mr', 'dev borem korum'],
-    ['mai', 'Maithili', 'मैथिली', 'hi', 'ahan kena chhi?'],
-    ['ne', 'Nepali', 'नेपाली', 'ne', 'namaste, tapai lai kasto cha?'],
-    ['doi', 'Dogri', 'डोगरी', 'hi', 'tusi kiyan o?'],
-    ['sd', 'Sindhi', 'سنڌي', null, ''],
-    ['mni-Mtei', 'Manipuri', 'ꯃꯤꯇꯩꯂꯣꯟ', null, '']
-  ];
-  const SOURCES = LANGS.filter(l => l[3] || l[0] === 'en');
-  // What people call each language written in English letters
-  const ROMAN = {
-    te: 'Tanglish', hi: 'Hinglish', ta: 'Thanglish', kn: 'Kanglish', ml: 'Manglish',
-    mr: 'Minglish', bn: 'Banglish', gu: 'Gujlish', pa: 'Punglish', or: 'Odiglish',
-    ur: 'Roman Urdu', as: 'Assamglish', sa: 'Roman Sanskrit', gom: 'Roman Konkani',
-    mai: 'Roman Maithili', ne: 'Nepglish', doi: 'Roman Dogri', en: 'English'
-  };
-  const romanOf = c => ROMAN[c] || L(c)[1];
-  const QUICK = ['te', 'hi', 'ta', 'kn', 'ml', 'mr', 'bn', 'en'];
-  const RTL = ['ur', 'sd'];
-  const L = c => LANGS.find(l => l[0] === c) || LANGS[0];
-  const nameOf = c => { const [, en, nat] = L(c); return en === nat ? en : `${nat} · ${en}`; };
-
-  let src = store.get('tr_src', 'te');
-  let tgt = store.get('te_tgt', 'te');
-  if (!SOURCES.some(l => l[0] === src)) src = 'te';
-  if (!LANGS.some(l => l[0] === tgt)) tgt = 'te';
-  let autoCorrect = store.get('te_ac', true);
-  let fontSize = store.get('te_fs', 22);
-  let history = store.get('te_hist', []);
-  // user's chosen words, keyed "lang:romanword" (old Telugu-only keys are migrated)
-  let overrides = store.get('te_words', {});
-  for (const k of Object.keys(overrides)) if (!k.includes(':')) { overrides['te:' + k] = overrides[k]; delete overrides[k]; }
-
-  const phonetic = () => src !== 'en';
-
-  // ---------- Offline phonetic fallback (Telugu) ----------
-  const VOWELS = [
-    ['aa','ఆ','ా'],['ai','ఐ','ై'],['au','ఔ','ౌ'],['ou','ఔ','ౌ'],
-    ['ee','ఈ','ీ'],['ii','ఈ','ీ'],['oo','ఊ','ూ'],['uu','ఊ','ూ'],['ru','ఋ','ృ'],
-    ['a','అ',''],['i','ఇ','ి'],['u','ఉ','ు'],['e','ఎ','ె'],['o','ఒ','ొ']
-  ];
-  const CONS = [
-    ['chh','ఛ'],['ksh','క్ష'],
-    ['kh','ఖ'],['gh','ఘ'],['ch','చ'],['jh','ఝ'],['th','థ'],['dh','ధ'],
-    ['ph','ఫ'],['bh','భ'],['sh','శ'],
-    ['k','క'],['g','గ'],['c','చ'],['j','జ'],['t','ట'],['d','డ'],['n','న'],
-    ['p','ప'],['f','ఫ'],['b','బ'],['m','మ'],['y','య'],['r','ర'],['l','ల'],
-    ['v','వ'],['w','వ'],['s','స'],['h','హ'],['x','క్స'],['z','జ'],['q','క']
-  ];
-  const VIRAMA = '్';
-  const matchFrom = (list, s, i) => list.find(it => s.startsWith(it[0], i)) || null;
-
-  function offlineTelugu(word) {
-    const s = word.toLowerCase();
-    let out = '', i = 0, pending = false;
-    while (i < s.length) {
-      const c = matchFrom(CONS, s, i);
-      if (c) {
-        if (pending) out += VIRAMA;
-        if (c[0] === 'n' && !pending) {
-          const nxt = matchFrom(CONS, s, i + 1);
-          if (nxt && !'nyrvwh'.includes(nxt[0][0])) { out += 'ం'; i++; pending = false; continue; }
-        }
-        out += c[1]; i += c[0].length; pending = true; continue;
-      }
-      const v = matchFrom(VOWELS, s, i);
-      if (v) { out += pending ? v[2] : v[1]; i += v[0].length; pending = false; continue; }
-      if (pending) out += VIRAMA;
-      out += s[i]; i++; pending = false;
-    }
-    if (pending) out += VIRAMA;
-    return out;
-  }
-  const fallback = w => src === 'te' ? offlineTelugu(w) : w;
-
-  // ---------- Status ----------
-  let online = true;
-  function setStatus(s) {
-    $('dot').className = 'dot ' + s;
-    $('status').textContent = { on: 'AI Live', off: 'Offline mode', busy: 'Thinking…' }[s];
-  }
-  const settle = () => setStatus(online ? 'on' : 'off');
-
-  // ---------- Google services ----------
-  const candCache = new Map(), candInflight = new Map();
-  const ck = w => src + ':' + w.toLowerCase();
-
-  function fetchCands(word) {
-    const key = ck(word), itc = L(src)[3];
-    if (candCache.has(key)) return Promise.resolve(candCache.get(key));
-    if (candInflight.has(key)) return candInflight.get(key);
-    const url = `https://inputtools.google.com/request?itc=${itc}-t-i0-und&num=8&cp=0&cs=1&ie=utf-8&oe=utf-8&app=demopage&text=` + encodeURIComponent(word.toLowerCase());
-    const p = fetch(url).then(r => r.json()).then(j => {
-      if (j[0] !== 'SUCCESS') throw 0;
-      const list = j[1][0][1];
-      candCache.set(key, list); online = true; return list;
-    }).catch(() => { online = false; return null; })
-      .finally(() => candInflight.delete(key));
-    candInflight.set(key, p);
-    return p;
-  }
-
-  const gtCache = new Map();
-  function gtranslate(text, sl, tl) {
-    const key = sl + '|' + tl + '|' + text;
-    if (gtCache.has(key)) return Promise.resolve(gtCache.get(key));
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&dt=rm&dt=qca&q=` + encodeURIComponent(text);
-    return fetch(url).then(r => r.json()).then(j => {
-      const segs = j[0] || [];
-      const res = {
-        text: segs.filter(s => s[0]).map(s => s[0]).join(''),
-        roman: (segs.find(s => s[0] == null && s[2]) || [])[2] || '',
-        corrected: (j[7] && j[7][1]) || null
-      };
-      gtCache.set(key, res); online = true; return res;
-    }).catch(() => { online = false; return null; });
-  }
-
-  // ---------- Phonetic typing engine (any language) ----------
-  const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const LATIN = /([A-Za-z]+)/;
-  const lettersOnly = s => s.replace(/[^\p{L}\p{M}\p{N}]/gu, '');
-
-  function baseWord(w) {
-    const k = ck(w);
-    return overrides[k] || (candCache.get(k) || [])[0] || fallback(w);
-  }
-
-  let model = null;        // current pieces
-  let lastCorr = null;     // { raw: [...], corr: [...] }
-  let activeIdx = -1;      // piece chosen by clicking (-1 = follow caret)
-
-  function buildModel() {
-    const parts = input.value.split(/(\s+)/);
-    const pieces = [], layout = [];
-    for (const p of parts) {
-      if (!p) continue;
-      if (/^\s+$/.test(p)) { layout.push(p); continue; }
-      const sub = p.split(LATIN);
-      const words = sub.filter((_, i) => i % 2);
-      const raw = sub.map((s, i) => i % 2 ? baseWord(s) : s).join('');
-      pieces.push({ words, raw, roman: words.length === 1 ? words[0].toLowerCase() : null });
-      layout.push(pieces.length - 1);
-    }
-    pieces.forEach((pc, i) => {
-      pc.shown = pc.raw; pc.fixed = false; pc.mine = pc.roman && overrides[src + ':' + pc.roman];
-      if (autoCorrect && !pc.mine && lastCorr && lastCorr.raw[i] === pc.raw && lastCorr.corr[i] !== pc.raw) {
-        pc.shown = lastCorr.corr[i]; pc.fixed = true;
-      }
-    });
-    model = { pieces, layout };
-    return model;
-  }
-
-  // Native-script text lives in the big box when target == source, else in the strip below
-  const nativeHost = () => tgt === src ? output : nativeLine;
-
-  function renderNative() {
-    const { pieces, layout } = buildModel();
-    const cur = currentPieceIndex();
-    nativeHost().innerHTML = layout.map(x => {
-      if (typeof x === 'string') return esc(x);
-      const pc = pieces[x];
-      if (!pc.words.length) return esc(pc.shown);
-      const cls = ['w'];
-      if (pc.fixed) cls.push('fixed');
-      if (pc.mine) cls.push('mine');
-      if (x === cur) cls.push('active');
-      const title = pc.fixed ? `Auto-corrected (was ${pc.raw})` : pc.mine ? 'Your saved word' : '';
-      return `<span class="${cls.join(' ')}" data-i="${x}" title="${esc(title)}">${esc(pc.shown)}</span>`;
-    }).join('');
-    renderSuggestions();
-    updateCounts();
-  }
-
-  const nativeText = () => model ? model.layout.map(x => typeof x === 'string' ? x : model.pieces[x].shown).join('') : '';
-
-  function currentPieceIndex() {
-    if (activeIdx >= 0) return activeIdx;
-    const before = input.value.slice(0, input.selectionStart);
-    const n = before.split(/\s+/).filter(Boolean).length;
-    if (!n) return -1;
-    return /\s$/.test(before) ? -1 : n - 1;
-  }
-
-  // ---------- Suggestions ----------
-  let sugList = [];
-  function renderSuggestions() {
-    if (!phonetic()) return;
-    const i = currentPieceIndex();
-    const pc = model && model.pieces[i];
-    if (!pc || !pc.roman) {
-      $('sugLabel').textContent = 'Suggestions';
-      sugList = [];
-      sugsEl.innerHTML = `<span class="hint">Type a word to see ${esc(L(src)[1])} suggestions. Click any word to change it.</span>`;
-      return;
-    }
-    const cands = candCache.get(ck(pc.roman));
-    if (!cands) fetchCands(pc.roman).then(() => { if (phonetic()) renderNative(); });
-    const corrWord = pc.fixed ? lettersOnly(pc.shown) : null;
-    const seen = new Set();
-    sugList = [];
-    const add = (w, tag) => { if (w && !seen.has(w)) { seen.add(w); sugList.push({ w, tag }); } };
-    add(corrWord, 'auto-fix');
-    (cands || []).forEach(w => add(w));
-    if (src === 'te') add(offlineTelugu(pc.roman), 'as typed');
-    const curWord = lettersOnly(pc.shown);
-    $('sugLabel').textContent = `Suggestions for “${pc.roman}”`;
-    sugsEl.innerHTML = sugList.slice(0, 9).map((s, n) => {
-      const cls = ['sug'];
-      if (s.w === curWord) cls.push('cur');
-      if (s.tag === 'auto-fix') cls.push('best');
-      return `<button class="${cls.join(' ')}" data-n="${n}"><small>${n + 1}</small>${esc(s.w)}${s.tag ? ` <small>${s.tag}</small>` : ''}</button>`;
-    }).join('') + (overrides[ck(pc.roman)] ? ' <button class="sug" data-reset="1"><small>reset</small></button>' : '');
-  }
-
-  function pickSuggestion(n) {
-    const pc = model && model.pieces[currentPieceIndex()];
-    if (!pc || !pc.roman || !sugList[n]) return;
-    overrides[ck(pc.roman)] = sugList[n].w;
-    store.set('te_words', overrides);
-    renderNative(); updateMyWords(); scheduleCorrection();
-    toast(`Saved: ${pc.roman} → ${sugList[n].w}`);
-  }
-
-  sugsEl.addEventListener('mousedown', e => e.preventDefault()); // keep caret in textarea
-  sugsEl.addEventListener('click', e => {
-    const b = e.target.closest('.sug'); if (!b) return;
-    if (b.dataset.reset) {
-      const pc = model.pieces[currentPieceIndex()];
-      delete overrides[ck(pc.roman)]; store.set('te_words', overrides);
-      renderNative(); updateMyWords(); scheduleCorrection(); return;
-    }
-    pickSuggestion(+b.dataset.n);
-  });
-
-  const onWordClick = e => {
-    if (!phonetic()) return;
-    const w = e.target.closest('.w'); if (!w) return;
-    activeIdx = +w.dataset.i;
-    renderNative();
-  };
-  output.addEventListener('click', onWordClick);
-  nativeLine.addEventListener('click', onWordClick);
-
-  // ---------- Auto-correct + translation ----------
-  let corrTimer = null, corrVersion = 0;
-  function scheduleCorrection() {
-    clearTimeout(corrTimer);
-    corrTimer = setTimeout(runCorrection, 450);
-  }
-  async function runCorrection() {
-    const my = ++corrVersion;
-    if (phonetic()) {
-      const raw = model.pieces.map(p => p.raw);
-      const rawText = model.layout.map(x => typeof x === 'string' ? x : model.pieces[x].raw).join('').trim();
-      if (!rawText) {
-        meaningEl.innerHTML = '<span class="hint">—</span>';
-        if (tgt !== src) output.textContent = '';
-        updateCounts(); settle(); return;
-      }
-      setStatus('busy');
-      const res = await gtranslate(rawText, src, 'en');   // spell-check + English meaning
-      if (my !== corrVersion) return;
-      if (!res) { meaningEl.innerHTML = '<span class="hint">Needs internet.</span>'; settle(); return; }
-      const corrPieces = (res.corrected || rawText).split(/\s+/).filter(Boolean);
-      if (corrPieces.length === raw.length) lastCorr = { raw, corr: corrPieces };
-      renderNative();
-      const shownText = nativeText().trim();
-      const outTl = tgt === src ? 'en' : tgt;
-      const m = outTl === 'en' && shownText === (res.corrected || rawText) ? res : await gtranslate(shownText, src, outTl);
-      if (my !== corrVersion) return;
-      if (tgt === src) {
-        meaningEl.textContent = (m && m.text) || '—';
-      } else {
-        output.textContent = (m && m.text) || '';
-        meaningEl.innerHTML = m && m.roman ? `<span class="roman">${esc(m.roman)}</span>` : '';
-        updateCounts();
-      }
-      saveHistorySoon();
-      settle();
-    } else {
-      const text = input.value.trim();
-      if (!text) { output.textContent = ''; meaningEl.innerHTML = '<span class="hint">—</span>'; renderEnHint(null); updateCounts(); settle(); return; }
-      setStatus('busy');
-      const res = await gtranslate(text, 'en', tgt);
-      if (my !== corrVersion) return;
-      if (res) {
-        output.textContent = tgt === 'en' ? (res.corrected || text) : res.text;
-        meaningEl.innerHTML = res.roman ? `<span class="roman">${esc(res.roman)}</span>` : '—';
-        renderEnHint(res.corrected && res.corrected.toLowerCase() !== text.toLowerCase() ? res.corrected : null);
-        saveHistorySoon();
-      } else {
-        output.textContent = '';
-        meaningEl.innerHTML = '<span class="hint">Translation needs internet.</span>';
-      }
-      updateCounts();
-      settle();
-    }
-  }
-
-  function renderEnHint(fix) {
-    $('sugLabel').textContent = 'Spelling check';
-    if (fix) {
-      sugsEl.innerHTML = `<span class="dym">Did you mean: <a id="dymA">${esc(fix)}</a>?</span>`;
-      $('dymA').onclick = () => { input.value = fix; onInput(); input.focus(); };
-    } else {
-      sugsEl.innerHTML = '<span class="hint">No spelling mistakes found.</span>';
-    }
-  }
-
-  // ---------- Input flow ----------
-  function onInput() {
-    activeIdx = -1;
-    if (phonetic()) {
-      renderNative();
-      const missing = [...new Set(model.pieces.flatMap(p => p.words))].filter(w => !candCache.has(ck(w)));
-      if (missing.length) {
-        setStatus('busy');
-        Promise.all(missing.map(fetchCands)).then(() => { renderNative(); settle(); scheduleCorrection(); });
-        return;
-      }
-    } else {
-      updateCounts();
-    }
-    scheduleCorrection();
-  }
-  input.addEventListener('input', onInput);
-  ['click', 'keyup'].forEach(ev => input.addEventListener(ev, e => {
-    if (!phonetic() || (e.type === 'keyup' && !e.key.startsWith('Arrow') && e.key !== 'Home' && e.key !== 'End')) return;
-    activeIdx = -1; renderNative();
-  }));
-
-  document.addEventListener('keydown', e => {
-    if (e.altKey && /^[1-9]$/.test(e.key) && phonetic()) { e.preventDefault(); pickSuggestion(+e.key - 1); }
-  });
-
-  // ---------- Language selection ----------
-  function applyLanguages() {
-    store.set('tr_src', src); store.set('te_tgt', tgt);
-    $('srcSel').value = src; $('langSel').value = tgt;
-    document.querySelectorAll('#quickFrom button').forEach(b => b.classList.toggle('active', b.dataset.l === src));
-    document.querySelectorAll('#quick button').forEach(b => b.classList.toggle('active', b.dataset.l === tgt));
-    document.querySelectorAll('#legend li').forEach(li => li.classList.toggle('active', li.dataset.l === src));
-
-    const [, sEn, sNat, , example] = L(src);
-    const [, tEn] = L(tgt);
-    $('outLabel').textContent = nameOf(tgt);
-    output.dir = RTL.includes(tgt) ? 'rtl' : 'ltr';
-    nativeLine.dir = RTL.includes(src) ? 'rtl' : 'ltr';
-    $('kbdHint').style.display = phonetic() ? '' : 'none';
-
-    if (phonetic()) {
-      $('inLabel').textContent = `${romanOf(src)} — ${sEn} in English letters`;
-      input.placeholder = `ex: ${example}\n\n(You can also type or paste ${sNat} directly)`;
-      $('meaningLabel').textContent = tgt === src ? 'English meaning' : `${sEn} (auto-corrected) · pronunciation`;
-    } else {
-      $('inLabel').textContent = 'Type in English';
-      input.placeholder = `ex: ${example}`;
-      $('meaningLabel').textContent = 'Pronunciation';
-    }
-    output.setAttribute('data-empty', tgt !== src ? `${tEn} translation appears here...`
-      : src === 'te' ? 'తెలుగు ఇక్కడ కనిపిస్తుంది...' : `${sNat} appears here...`);
-
-    output.innerHTML = ''; nativeLine.innerHTML = ''; meaningEl.innerHTML = '';
-    lastCorr = null;
-    onInput();
-    input.focus();
-  }
-
-  const opt = l => `<option value="${l[0]}">${l[1] === l[2] ? l[1] : `${l[1]} — ${l[2]}`}</option>`;
-  $('srcSel').innerHTML = SOURCES.map(l => `<option value="${l[0]}">${l[0] === 'en' ? 'English' : `${romanOf(l[0])} (${l[1]})`}</option>`).join('');
-  $('langSel').innerHTML = LANGS.map(opt).join('');
-  $('srcSel').onchange = e => { src = e.target.value; applyLanguages(); };
-  $('langSel').onchange = e => { tgt = e.target.value; applyLanguages(); };
-
-  const chips = (el, label, codes, name) => {
-    el.innerHTML = `<span class="ql">${label}</span>` + codes.map(c => `<button data-l="${c}" title="${L(c)[1]}">${name(c)}</button>`).join('');
-  };
-  chips($('quickFrom'), 'From', QUICK, romanOf);
-  chips($('quick'), 'To', QUICK, c => L(c)[2]);
-  $('quickFrom').onclick = e => { const b = e.target.closest('button'); if (b) { src = b.dataset.l; applyLanguages(); } };
-  $('quick').onclick = e => { const b = e.target.closest('button'); if (b) { tgt = b.dataset.l; applyLanguages(); } };
-
-  // Legend: "Tanglish → Telugu in English letters" (click to select)
-  $('legend').innerHTML = SOURCES.filter(l => l[0] !== 'en')
-    .map(l => `<li data-l="${l[0]}"><b>${romanOf(l[0])}</b> → ${l[1]} in English letters</li>`).join('');
-  $('legend').onclick = e => { const li = e.target.closest('li'); if (li) { src = li.dataset.l; applyLanguages(); window.scrollTo({ top: 0, behavior: 'smooth' }); } };
-
-  $('swapBtn').onclick = () => {
-    if (!SOURCES.some(l => l[0] === tgt)) return toast(`Typing in ${L(tgt)[1]} is not supported`);
-    const translated = outText().trim();
-    [src, tgt] = [tgt, src];
-    if (translated) input.value = translated;
-    applyLanguages();
-  };
-
-  // ---------- Tools ----------
-  function toast(msg) {
-    const t = $('toast'); t.textContent = msg; t.classList.add('show');
-    clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 1600);
-  }
-  const outText = () => phonetic() && tgt === src ? nativeText() : output.textContent;
-
-  $('clearBtn').onclick = () => { input.value = ''; onInput(); input.focus(); };
-  $('copyBtn').onclick = async () => {
-    try { await navigator.clipboard.writeText(outText()); toast('Copied!'); } catch { toast('Copy failed'); }
-  };
-  $('dlBtn').onclick = () => {
-    const blob = new Blob([outText()], { type: 'text/plain;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = `translation-${tgt}.txt`; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  };
-
-  // Listen
-  let audio = null;
-  $('speakBtn').onclick = () => {
-    if (audio) { audio.pause(); audio = null; $('speakBtn').classList.remove('live'); return; }
-    const text = outText().trim(); if (!text) return;
-    const chunks = text.match(/[^.!?।۔\n]{1,180}[.!?।۔\n]?/g) || [text];
-    let i = 0;
-    $('speakBtn').classList.add('live');
-    const next = () => {
-      if (i >= chunks.length) { audio = null; $('speakBtn').classList.remove('live'); return; }
-      audio = new Audio(`https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tgt}&q=` + encodeURIComponent(chunks[i++].trim()));
-      audio.onended = next;
-      audio.onerror = () => { audio = null; $('speakBtn').classList.remove('live'); fallbackSpeak(text); };
-      audio.play().catch(audio.onerror);
-    };
-    next();
-  };
-  function fallbackSpeak(text) {
-    if (!('speechSynthesis' in window)) return toast('Audio not available');
-    const u = new SpeechSynthesisUtterance(text); u.lang = tgt === 'en' ? 'en-IN' : tgt + '-IN';
-    speechSynthesis.speak(u);
-  }
-
-  // Voice typing (speaks in the "typing in" language)
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null;
-  $('micBtn').onclick = () => {
-    if (!SR) return toast('Voice typing works in Chrome / Edge');
-    if (rec) { rec.stop(); return; }
-    rec = new SR();
-    rec.lang = src === 'en' ? 'en-IN' : (src === 'gom' || src === 'mai' || src === 'doi' ? 'hi' : src) + '-IN';
-    rec.interimResults = false; rec.continuous = true;
-    rec.onresult = e => {
-      const said = [...e.results].slice(e.resultIndex).map(r => r[0].transcript).join(' ');
-      const pos = input.selectionStart, v = input.value;
-      const pad = pos && !/\s$/.test(v.slice(0, pos)) ? ' ' : '';
-      input.value = v.slice(0, pos) + pad + said + ' ' + v.slice(pos);
-      input.selectionStart = input.selectionEnd = pos + pad.length + said.length + 1;
-      onInput();
-    };
-    rec.onend = () => { rec = null; $('micBtn').classList.remove('live'); };
-    rec.onerror = ev => toast('Mic: ' + ev.error);
-    rec.start();
-    $('micBtn').classList.add('live');
-    toast(`Speak in ${L(src)[1]}…`);
-  };
-
-  // Auto-correct toggle
-  $('acToggle').checked = autoCorrect;
-  $('acToggle').onchange = e => { autoCorrect = e.target.checked; store.set('te_ac', autoCorrect); onInput(); };
-
-  // Font size
-  const applyFs = () => { document.documentElement.style.setProperty('--fs', fontSize + 'px'); store.set('te_fs', fontSize); };
-  $('fsUp').onclick = () => { fontSize = Math.min(40, fontSize + 2); applyFs(); };
-  $('fsDown').onclick = () => { fontSize = Math.max(14, fontSize - 2); applyFs(); };
-  applyFs();
-
-  function updateCounts() {
-    const t = outText();
-    const w = t.trim() ? t.trim().split(/\s+/).length : 0;
-    $('counts').textContent = `${w} words · ${[...t].length} chars`;
-  }
-
-  function updateMyWords() {
-    const n = Object.keys(overrides).length;
-    $('myWords').innerHTML = n ? `My words: ${n} <a href="#" id="resetWords" style="color:var(--accent)">reset</a>` : 'My words: 0';
-    const r = $('resetWords');
-    if (r) r.onclick = e => { e.preventDefault(); if (confirm('Forget all your saved word choices?')) { overrides = {}; store.set('te_words', overrides); updateMyWords(); onInput(); } };
-  }
-  updateMyWords();
-
-  // History
-  let histTimer = null;
-  function saveHistorySoon() {
-    clearTimeout(histTimer);
-    histTimer = setTimeout(() => {
-      const text = input.value.trim(), out = outText().trim();
-      if (text.length < 3 || !out) return;
-      const last = history[0];
-      if (last && last.from === src && last.to === tgt && (text.startsWith(last.text) || last.text.startsWith(text))) history.shift();
-      history.unshift({ from: src, to: tgt, text, out });
-      history = history.slice(0, 30);
-      store.set('te_hist', history);
-      renderHistory();
-    }, 2500);
-  }
-  // older entries used {mode, tgt, src:text}
-  const normH = h => h.from ? h : { from: h.mode === 'en2te' ? 'en' : 'te', to: h.tgt || 'te', text: h.src, out: h.out };
-  function renderHistory() {
-    $('histList').innerHTML = history.length
-      ? history.map((h, i) => { h = normH(h); return `<div class="hi" data-i="${i}"><div class="te">${esc(h.out)}</div><div class="en">${esc(romanOf(h.from))} → ${esc(L(h.to)[1])} · ${esc(h.text)}</div></div>`; }).join('')
-      : '<div class="hi"><span class="hint">No history yet.</span></div>';
-  }
-  $('histBtn').onclick = () => { $('history').classList.toggle('open'); renderHistory(); };
-  $('histClear').onclick = () => { history = []; store.set('te_hist', history); renderHistory(); };
-  $('histList').onclick = e => {
-    const row = e.target.closest('.hi'); if (!row || !history[+row.dataset.i]) return;
-    const h = normH(history[+row.dataset.i]);
-    input.value = h.text;
-    src = SOURCES.some(l => l[0] === h.from) ? h.from : 'te'; tgt = h.to;
-    applyLanguages();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  applyLanguages();
-})();
-</script>
+<script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
+<script type="module" src="studio.js"></script>
 </body>
 </html>
