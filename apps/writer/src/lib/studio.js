@@ -13,6 +13,10 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const nowIso = () => new Date().toISOString();
 let view, user;
 
+// Dev only: this module wires listeners once at start(), so a hot-swapped copy
+// would never run. Declining makes the dev server reload the page instead.
+import.meta.webpackHot?.decline();
+
 // Entry point, called once by src/app/Studio.tsx after the shell has rendered.
 let started = false;
 const me = Symbol('studio'); // this copy of the module (dev hot-reload can load a second one)
@@ -43,7 +47,8 @@ const failed = (what, error) => { console.error(what, error); notify(`${what} fa
 // ---------- state + saving ----------
 let project = null;   // { id, title, status, settings, ... }
 let ebook = null;     // published snapshot { id, published_at, updated_at } or null
-let chapters = [];    // ordered by position
+let chapters = [];    // ordered by position, without deleted ones
+let trash = [];       // deleted chapters / empty pages (deleted_at set), newest first
 const pending = new Map(); // key → { timer, run }
 
 function later(key, ms, run) {
@@ -96,7 +101,9 @@ async function loadProject(id) {
   if (e1 || e2) { failed('Loading the book', e1 || e2); return false; }
   if (!p) return false;
   project = { ...p, settings: withDefaults(p.settings) };
-  chapters = cs;
+  // filtered here rather than in the query so books still load before writer_chapters_trash.sql has run
+  chapters = cs.filter(c => !c.deleted_at);
+  trash = cs.filter(c => c.deleted_at).sort((a, b) => b.deleted_at.localeCompare(a.deleted_at));
   return true;
 }
 
@@ -200,7 +207,7 @@ async function home() {
       notify('Unpublished'); home();
     }
     if (act === 'delete') {
-      if (!await confirmBox(`Delete “${p.title}”?`, `All its chapters will be deleted${ebookId ? ' and its ebook link will stop working' : ''}. This cannot be undone.`, 'Delete book')) return;
+      if (!await confirmBox(`Delete “${p.title}”?`, `All its chapters will be deleted${ebookId ? ' and its ebook link will stop working' : ''}. This cannot be undone.`, 'Delete book', 'DELETE')) return;
       const { error } = await sb.from('projects').delete().eq('id', p.id);
       if (error) return failed('Deleting the book', error);
       home();
@@ -212,21 +219,35 @@ async function home() {
 
 // In-app "are you sure?" — the browser's confirm() is blocked in some embedded
 // browsers (and looks out of place). Resolves true only on the confirm button.
-function confirmBox(title, text, okLabel) {
+// With `typeWord`, the confirm button stays disabled until that exact word is typed.
+function confirmBox(title, text, okLabel, typeWord) {
   const dlg = document.createElement('dialog');
   dlg.className = 'ask';
   dlg.innerHTML = `
     <form method="dialog">
       <h3>${esc(title)}</h3>
       <p style="font-size:13px">${esc(text)}</p>
+      ${typeWord ? `
+        <label class="lbl" for="askWord">Type <b style="color:var(--bad)">${esc(typeWord)}</b> to confirm</label>
+        <input class="in" id="askWord" autocomplete="off" autocapitalize="characters" spellcheck="false" style="margin:4px 0 14px">` : ''}
       <div class="row" style="justify-content:flex-end">
-        <button class="btn" value="cancel" autofocus>Cancel</button>
-        <button class="btn primary danger-fill" value="ok">${esc(okLabel)}</button>
+        <button class="btn" value="cancel" ${typeWord ? '' : 'autofocus'}>Cancel</button>
+        <button class="btn primary danger-fill" value="ok" ${typeWord ? 'disabled' : ''}>${esc(okLabel)}</button>
       </div>
     </form>`;
   document.body.append(dlg);
+  const ok = dlg.querySelector('[value=ok]'), word = dlg.querySelector('#askWord');
+  if (word) {
+    word.oninput = () => { ok.disabled = word.value !== typeWord; };
+    // Enter would hit the form's first button (Cancel); make it confirm instead, only when the word matches
+    word.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); if (!ok.disabled) ok.click(); } };
+  }
   dlg.showModal();
-  return new Promise(res => dlg.addEventListener('close', () => { res(dlg.returnValue === 'ok'); dlg.remove(); }));
+  word?.focus();
+  return new Promise(res => dlg.addEventListener('close', () => {
+    res(dlg.returnValue === 'ok' && (!word || word.value === typeWord));
+    dlg.remove();
+  }));
 }
 
 // New-book popup. Resolves to the author name ('' is fine), or null if cancelled.
@@ -411,7 +432,8 @@ function projectView() {
           <span id="saveState" style="font-size:12px;color:var(--muted)">All changes saved</span>
         </div>
 
-        <details class="panel" open>
+        <!-- every panel starts closed except Chapters & pages (re-rendered on each visit) -->
+        <details class="panel">
           <summary>Cover page</summary>
           <div class="pb">
             <div class="field"><span class="lbl">Title</span>
@@ -420,15 +442,6 @@ function projectView() {
               <div class="tag-ed"><div id="bookTagline" aria-label="Tagline"></div></div></div>
             <div class="field"><span class="lbl">Author</span>
               <input class="in" id="bookAuthor" value="${esc(s.author || '')}" placeholder="Author name" aria-label="Author name" maxlength="120"></div>
-          </div>
-        </details>
-
-        <details class="panel">
-          <summary>Back cover</summary>
-          <div class="pb">
-            <div class="field"><span class="lbl">Summary</span>
-              <div class="tag-ed back-ed"><div id="bookBack" aria-label="Back cover summary"></div></div></div>
-            <span style="font-size:12px;color:var(--muted)">The author name from the cover is shown at the bottom.</span>
           </div>
         </details>
 
@@ -441,7 +454,16 @@ function projectView() {
           <ul class="chapters" id="chList"></ul>
         </details>
 
-        <details class="panel" open>
+        <details class="panel">
+          <summary>Back cover</summary>
+          <div class="pb">
+            <div class="field"><span class="lbl">Summary</span>
+              <div class="tag-ed back-ed"><div id="bookBack" aria-label="Back cover summary"></div></div></div>
+            <span style="font-size:12px;color:var(--muted)">The author name from the cover is shown at the bottom.</span>
+          </div>
+        </details>
+
+        <details class="panel">
           <summary>Page numbers &amp; header</summary>
           <div class="pb setgrid">
             <span class="sub">Page numbers</span>
@@ -459,13 +481,13 @@ function projectView() {
           </div>
         </details>
 
-        <details class="panel" open>
+        <details class="panel">
           <summary>Publish as a free ebook</summary>
           <div class="pb" id="pubBox"></div>
         </details>
 
-        <div class="panel">
-          <div class="ph"><b>Download the whole book</b></div>
+        <details class="panel">
+          <summary>Download the whole book</summary>
           <div class="pb">
             <div class="row">
               <button class="btn" data-export="pdf">PDF</button>
@@ -474,7 +496,12 @@ function projectView() {
             </div>
             <span style="font-size:12px;color:var(--muted)">PDF opens the print dialog — choose “Save as PDF”. It matches the preview exactly.</span>
           </div>
-        </div>
+        </details>
+
+        <details class="panel">
+          <summary>Deleted chapters<span id="trashCount"></span></summary>
+          <div id="trashBox"></div>
+        </details>
       </aside>
       ${previewHtml()}
     </div>`;
@@ -522,6 +549,7 @@ function projectView() {
   $('#addBlank').onclick = () => addItem('blank');
   view.querySelectorAll('[data-export]').forEach(b => b.onclick = () => doExport(b.dataset.export, b));
   renderChapterList();
+  renderTrash();
   mountPreview();
 }
 
@@ -531,43 +559,186 @@ function renderChapterList() {
     const blank = c.kind === 'blank';
     if (!blank) n++;
     return `
-      <li class="${blank ? 'blank' : ''}">
+      <li class="${blank ? 'blank' : ''}" data-id="${c.id}">
+        <span class="grip" title="Drag to reorder" aria-hidden="true">⠿</span>
         <span class="n">${blank ? '' : n}</span>
         ${blank
           ? `<span class="t"><b>Empty page</b></span>`
-          : `<a class="t" href="#/p/${project.id}/c/${c.id}"><b>${esc(c.title || 'Untitled chapter')}</b><span>${words(c.html)} words · edited ${ago(c.updated_at)}</span></a>`}
+          : `<a class="t" draggable="false" href="#/p/${project.id}/c/${c.id}"><b>${esc(c.title || 'Untitled chapter')}</b><span>${words(c.html)} words · edited ${ago(c.updated_at)}</span></a>`}
         <span class="acts">
           <button class="btn sm icon" data-go="${c.id}" title="Show in preview" aria-label="Show in preview">◉</button>
-          <button class="btn sm icon" data-mv="-1" data-i="${i}" title="Move up" aria-label="Move up" ${i ? '' : 'disabled'}>↑</button>
-          <button class="btn sm icon" data-mv="1" data-i="${i}" title="Move down" aria-label="Move down" ${i < chapters.length - 1 ? '' : 'disabled'}>↓</button>
           <button class="btn sm icon danger" data-rm="${i}" title="Delete" aria-label="Delete">✕</button>
         </span>
       </li>`;
   }).join('') : '<li><span class="t" style="color:var(--muted)">No chapters yet — add one to start writing.</span></li>';
 
+  enableDrag($('#chList'));
   $('#chList').onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.go) return bookView?.go(starts[b.dataset.go] ?? 0);
-    if (b.dataset.mv) {
-      const i = +b.dataset.i, j = i + +b.dataset.mv, a = chapters[i], c = chapters[j];
-      [a.position, c.position] = [c.position, a.position];
-      [chapters[i], chapters[j]] = [c, a];
-      renderChapterList(); refresh();
-      const res = await track(Promise.all([
-        sb.from('chapters').update({ position: a.position }).eq('id', a.id),
-        sb.from('chapters').update({ position: c.position }).eq('id', c.id),
-      ]));
-      const err = res.find(r => r.error)?.error;
-      if (err) failed('Reordering', err);
-      return;
-    }
     if (b.dataset.rm) {
       const c = chapters[+b.dataset.rm];
-      if (c.kind === 'chapter' && !await confirmBox(`Delete “${c.title || 'Untitled chapter'}”?`, 'This cannot be undone.', 'Delete chapter')) return;
+      const what = c.kind === 'blank' ? 'this empty page' : `“${c.title || 'Untitled chapter'}”`;
+      if (!await confirmBox(`Delete ${what}?`, 'It moves to “Deleted chapters” at the bottom of this page, where you can bring it back.', c.kind === 'blank' ? 'Delete page' : 'Delete chapter', 'DELETE')) return;
+      const deleted_at = nowIso();
+      const { error } = await sb.from('chapters').update({ deleted_at }).eq('id', c.id);
+      if (error) return failed('Deleting', /deleted_at/.test(error.message) ? { message: 'run migrations/writer_chapters_trash.sql in Supabase first' } : error);
+      c.deleted_at = deleted_at;
+      chapters = chapters.filter(x => x !== c);
+      trash.unshift(c);
+      renderChapterList(); renderTrash(); refresh();
+      notify('Moved to Deleted chapters');
+    }
+  };
+}
+
+// Reorder by drag: grab the ⠿ handle, or press and hold anywhere on a row.
+// The row lifts out of the list and follows the pointer; a dashed gap shows
+// where it will land and the other rows slide aside. Pointer events, so a
+// mouse, a finger and a pen all work the same.
+function enableDrag(list) {
+  if (list.dataset.drag) return; // listeners survive re-renders of the rows
+  list.dataset.drag = '1';
+  let drag = null; // { li, id, x, y, timer, active, gap, dx, dy }
+  let swallowClick = false;
+  const scroller = list.closest('.side');
+
+  // slide rows from where they were to where they are now (FLIP)
+  const slide = (rows, before) => rows.forEach(r => {
+    const d = before.get(r) - r.getBoundingClientRect().top;
+    if (!d) return;
+    r.style.transition = 'none';
+    r.style.transform = `translateY(${d}px)`;
+    requestAnimationFrame(() => { r.style.transition = 'transform .16s ease'; r.style.transform = ''; });
+  });
+
+  const begin = () => {
+    const { li } = drag;
+    const r = li.getBoundingClientRect();
+    drag.active = true;
+    drag.dx = drag.x - r.left; drag.dy = drag.y - r.top;
+    drag.gap = document.createElement('li');
+    drag.gap.className = 'drop-gap';
+    drag.gap.style.height = r.height + 'px';
+    li.before(drag.gap);
+    Object.assign(li.style, { position: 'fixed', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+    li.classList.add('dragging');
+    list.classList.add('sorting');
+    try { list.setPointerCapture(drag.id); } catch {}
+    if (drag.touch) navigator.vibrate?.(12);
+  };
+
+  const end = () => {
+    clearTimeout(drag?.timer);
+    const d = drag; drag = null;
+    if (!d?.active) return;
+    const { li, gap } = d;
+    list.classList.remove('sorting');
+    swallowClick = true; setTimeout(() => { swallowClick = false; }, 0);
+    // glide into the gap, then drop back into the list there
+    const to = gap.getBoundingClientRect();
+    li.style.transition = 'left .15s ease, top .15s ease, transform .15s ease';
+    li.style.left = to.left + 'px'; li.style.top = to.top + 'px';
+    li.classList.remove('dragging');
+    setTimeout(async () => {
+      gap.replaceWith(li);
+      li.removeAttribute('style');
+      const ids = [...list.children].map(x => x.dataset.id);
+      if (ids.join() !== chapters.map(c => c.id).join()) await saveOrder(ids);
+    }, 160);
+  };
+
+  list.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || drag) return;
+    const li = e.target.closest('li[data-id]');
+    if (!li || e.target.closest('button')) return;
+    drag = { li, id: e.pointerId, x: e.clientX, y: e.clientY, active: false, touch: e.pointerType === 'touch' };
+    if (e.target.closest('.grip')) { e.preventDefault(); begin(); }
+    else drag.timer = setTimeout(() => drag && begin(), 280); // press and hold
+  });
+
+  list.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.active) {
+      // moved before the hold finished: it's a scroll or a click, not a drag
+      if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 8) { clearTimeout(drag.timer); drag = null; }
+      else { drag.x = e.clientX; drag.y = e.clientY; }
+      return;
+    }
+    e.preventDefault();
+    const { li, gap } = drag;
+    // the card sticks to the pointer exactly where it was grabbed
+    li.style.left = e.clientX - drag.dx + 'px';
+    li.style.top = e.clientY - drag.dy + 'px';
+    // move the gap to wherever the card's centre now is
+    const mid = e.clientY - drag.dy + li.offsetHeight / 2;
+    const rows = [...list.children].filter(r => r !== li && r !== gap);
+    const target = rows.find(r => { const b = r.getBoundingClientRect(); return mid < b.top + b.height / 2; });
+    const want = target ? rows.indexOf(target) : rows.length;        // rows that should sit above the gap
+    const kids = [...list.children];
+    const now = kids.slice(0, kids.indexOf(gap)).filter(r => r !== li).length;
+    if (want !== now) {
+      const before = new Map(rows.map(r => [r, r.getBoundingClientRect().top]));
+      if (target) target.before(gap); else list.append(gap);
+      slide(rows, before);
+    }
+    // keep scrolling when dragging near the top / bottom of the panel
+    const box = scroller.getBoundingClientRect();
+    if (e.clientY < box.top + 50) scroller.scrollBy(0, -14);
+    else if (e.clientY > box.bottom - 50) scroller.scrollBy(0, 14);
+  });
+
+  list.addEventListener('pointerup', end);
+  list.addEventListener('pointercancel', end);
+  // once a drag has started, a finger must move the row, not the page
+  list.addEventListener('touchmove', e => { if (drag?.active) e.preventDefault(); }, { passive: false });
+  // a hold-drag that ends over the chapter link must not open the chapter
+  list.addEventListener('click', e => { if (swallowClick) { e.preventDefault(); e.stopPropagation(); } }, true);
+  list.addEventListener('contextmenu', e => { if (drag) e.preventDefault(); });
+}
+
+async function saveOrder(ids) {
+  const byId = new Map(chapters.map(c => [c.id, c]));
+  const old = new Map(chapters.map(c => [c.id, c.position]));
+  chapters = ids.map(id => byId.get(id));
+  chapters.forEach((c, i) => { c.position = i + 1; });
+  const changed = chapters.filter(c => old.get(c.id) !== c.position);
+  renderChapterList(); refresh();
+  const res = await track(Promise.all(changed.map(c => sb.from('chapters').update({ position: c.position }).eq('id', c.id))));
+  const err = res.find(r => r.error)?.error;
+  if (err) failed('Reordering', err);
+}
+
+// ---------- deleted chapters ----------
+function renderTrash() {
+  const box = $('#trashBox'); if (!box) return;
+  $('#trashCount').textContent = trash.length ? ` (${trash.length})` : '';
+  box.innerHTML = trash.length ? `<ul class="chapters">${trash.map(c => `
+    <li data-tid="${c.id}">
+      <span class="t"><b>${c.kind === 'blank' ? '<i>Empty page</i>' : esc(c.title || 'Untitled chapter')}</b><span>${c.kind === 'blank' ? '' : `${words(c.html)} words · `}deleted ${ago(c.deleted_at)}</span></span>
+      <button class="btn sm" data-restore="${c.id}">Restore</button>
+      <button class="btn sm danger" data-purge="${c.id}" title="Delete forever">Delete forever</button>
+    </li>`).join('')}</ul>` : '<p class="trash-empty">Nothing here. Deleted chapters and empty pages land here so you can bring them back.</p>';
+  box.onclick = async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    const c = trash.find(x => x.id === (b.dataset.restore || b.dataset.purge)); if (!c) return;
+    if (b.dataset.restore) {
+      // comes back at the end of the book; drag it into place
+      const position = Math.max(0, ...chapters.map(x => x.position)) + 1;
+      const { error } = await sb.from('chapters').update({ deleted_at: null, position }).eq('id', c.id);
+      if (error) return failed('Restoring', error);
+      Object.assign(c, { deleted_at: null, position });
+      trash = trash.filter(x => x !== c);
+      chapters.push(c);
+      renderChapterList(); renderTrash(); refresh();
+      notify('Restored to the end of the book');
+    } else {
+      const what = c.kind === 'blank' ? 'this empty page' : `“${c.title || 'Untitled chapter'}”`;
+      if (!await confirmBox(`Delete ${what} forever?`, 'This cannot be undone.', 'Delete forever', 'DELETE')) return;
       const { error } = await sb.from('chapters').delete().eq('id', c.id);
       if (error) return failed('Deleting', error);
-      chapters = chapters.filter(x => x !== c);
-      renderChapterList(); refresh();
+      trash = trash.filter(x => x !== c);
+      renderTrash();
     }
   };
 }
@@ -579,7 +750,7 @@ async function addItem(kind) {
   if (error) return failed('Adding', error);
   chapters.push(data);
   if (kind === 'chapter') location.hash = `#/p/${project.id}/c/${data.id}`;
-  else { renderChapterList(); refresh(); notify('Empty page added at the end — use the arrows to move it'); }
+  else { renderChapterList(); refresh(); notify('Empty page added at the end — drag it to where you want it'); }
 }
 
 // ---------- publishing ----------

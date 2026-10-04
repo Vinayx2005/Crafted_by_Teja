@@ -109,6 +109,20 @@
   .chapters { list-style: none; margin: 0; padding: 0; }
   .chapters li { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); }
   .chapters li:first-child { border-top: 0; }
+  .chapters li { -webkit-touch-callout: none; }
+  #trashBox .chapters li { cursor: default; }
+  #trashBox .t { min-width: 0; }
+  .trash-empty { margin: 0; padding: 12px 14px; font-size: 13px; color: var(--muted); }
+  .chapters .grip { flex: none; cursor: grab; color: var(--faint); font-size: 15px; line-height: 1; padding: 4px 2px; touch-action: none; user-select: none; }
+  .chapters .grip:hover { color: var(--text); }
+  .chapters.sorting, .chapters.sorting * { cursor: grabbing; user-select: none; }
+  /* the lifted card follows the pointer (position: fixed set inline while dragging) */
+  .chapters li.dragging {
+    z-index: 50; pointer-events: none; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px;
+    box-shadow: 0 14px 34px rgba(0,0,0,.28); transform: rotate(-1.2deg) scale(1.02); opacity: .97;
+  }
+  .chapters li.drop-gap { padding: 0; border: 2px dashed var(--accent); border-radius: 10px; margin: 4px 8px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .chapters li.drop-gap + li { border-top: 0; }
   .chapters li:hover { background: var(--panel2); }
   .chapters .n { color: var(--faint); font-size: 12px; width: 22px; text-align: right; flex: none; }
   .chapters .t { flex: 1; min-width: 0; text-decoration: none; }
