@@ -44,16 +44,17 @@ export interface Item {
 }
 
 // Who each site writes for. Edit these to change the voice.
-const SITES: Record<Site, { name: string; path: string; profile: string; categories: string[]; disclaimer?: string }> = {
+const SITES: Record<Site, { name: string; path: string; profile: string; categories: string[] }> = {
   pft: {
     name: 'Personal FT blog (pft.craftedbyteja.com)',
     path: '/blogs',
     categories: ['tip', 'insight'],
-    profile: `Personal FT is a free personal-finance tracker app for Indian users (expenses, budgets, bank accounts, loans/EMIs, SIPs and investments, receivables).
-Readers: salaried Indians aged 22–40 who want to get their money organised — budgeting, saving, debt, credit cards, mutual funds/SIPs, tax basics.
-Voice: clear, practical, friendly and non-judgemental. Explain any jargon the first time. Use Indian context: ₹, lakh/crore, UPI, EMI, SIP, PPF, ELSS, new vs old tax regime.
-You may mention Personal FT where tracking genuinely helps the reader (at most twice, never salesy).`,
-    disclaimer: '*This article is for general information only and is not financial advice. Rules and rates change — check an official source or a SEBI-registered adviser before acting.*',
+    profile: `The blog of Personal FT, a software product by Teja. What a post is about is decided by the
+editor's material — never steer it towards money, or any other subject of your own choosing.
+Readers: mostly Indian, 22–40. Write for them: ₹ and lakh/crore where amounts come up, Indian context
+where examples come up.
+Voice: clear, practical, friendly and non-judgemental. Explain any term the first time you use it.
+Do NOT mention, recommend or link Personal FT unless the editor's own material does. The app is what this blog belongs to, not what it is about.`,
   },
   root: {
     name: 'Crafted by Teja (craftedbyteja.com)',
@@ -67,11 +68,17 @@ Voice: honest, reflective and conversational, speaking directly to the reader ("
 };
 
 const STYLE = `Writing rules:
+- Simple English throughout. Short, everyday words a 15-year-old reads without stopping. No jargon, no
+  business-speak, no technical vocabulary for its own sake. Where a term genuinely can't be avoided
+  (an acronym, an industry term), say what it means in plain words the first time, in the same sentence.
+- Explain, don't assert. Break a number or an idea into its parts when the reader needs that to follow
+  it, and give a concrete example — real figures, a named situation — so the point can be pictured.
 - Write for a smart friend: plain words, short paragraphs (1–3 sentences), active voice, concrete examples and real numbers.
 - Every section must earn its place. No filler, no restating the question, no generic advice anyone could write.
 - Use bullet lists and numbered steps where they help scanning; **bold** only for key takeaways.
 - Never use these phrases: "in today's fast-paced world", "delve", "dive into", "navigate", "landscape", "unlock", "game-changer", "it's important to note", "in conclusion", "embark", "elevate", "seamless", "robust", "leverage", "tapestry", "realm".
 - Never invent personal stories, testimonials, quotes or statistics.
+- No promotion. Don't pitch, recommend or link any product, app or service — including our own — and don't end on a sign-up, download or "try our" line. The only exception is a product the editor's own material already talks about, and then you say only what they said about it. A conclusion sums up or leaves the reader with a next action they take themselves, never one that sends them to us.
 - Markdown only: ## and ### headings, lists, **bold**, *italic*, [links](url), > quotes. No tables, no HTML, no H1.`;
 
 const MODEL = process.env.GEMINI_BLOG_MODEL || 'gemini-flash-latest';
@@ -128,7 +135,15 @@ async function ask(prompt: string, opts: AskOpts = {}) {
     const canRetry = second === claude ? haveClaude : !!process.env.GEMINI_BLOG_API_KEY;
     if (!canRetry || !outOfCapacity(e)) throw e;
     console.warn(`[blog-agent] ${name(first)} unavailable (${e?.message || e}) — falling back to ${name(second)}`);
-    return await second(prompt, opts);
+    try {
+      return await second(prompt, opts);
+    } catch (e2: any) {
+      // Both are down. Report both: showing only the fallback's error sends you
+      // off to fix the wrong provider's billing.
+      throw new Error(
+        `${name(first)} failed: ${e?.message || e} — then ${name(second)} failed: ${e2?.message || e2}`,
+      );
+    }
   }
 }
 
@@ -273,6 +288,11 @@ async function coveredTitles(site: Site) {
 export const seedKeywords = (seed: Seed) =>
   seed.keyword.split('\n').map((k) => k.trim()).filter(Boolean);
 
+// How many search terms a set of topics should turn into. Each one costs a
+// round of autocomplete probes at research time, so this is the knob to turn
+// if a run starts feeling slow.
+const KEYWORDS_WANTED = 10;
+
 // Topics in, search terms out. The editor thinks in subjects ("the mistake I
 // made with my emergency fund"); Google needs head terms. Called from the
 // Research form's "Generate keywords" button, and again inside research() as a
@@ -289,76 +309,160 @@ ${notes}
 
 Target market: ${country === 'GLOBAL' ? 'worldwide' : country}. Everything is written in English.
 
-Use Google Search to work out how real people search for these topics. Return the 3-6 head keywords
-worth building a blog around: short search phrases someone would actually type, not titles and not
-questions. Favour terms with real demand that this site can realistically rank for. Cover the editor's
-topics between them — don't drift onto a neighbouring subject.
+Use Google Search to work out how real people search for these topics. Return exactly ${KEYWORDS_WANTED}
+head keywords worth building a blog around: short search phrases someone would actually type, not titles
+and not questions. Favour terms with real demand that this site can realistically rank for. Cover the
+editor's topics between them — don't drift onto a neighbouring subject.
+
+${KEYWORDS_WANTED} is a floor as well as a ceiling. If the topics are narrow, go wider the way a reader
+would: the adjacent question, the comparison, the "how much", the "when", the common mistake, the
+beginner version of the same search. Every one must still be a term people actually type — never pad
+the list with near-duplicates of each other.
 
 Return ONLY a JSON array of strings.`, { search: true }));
   const list = (Array.isArray(found) ? found : [])
-    .map((k) => String(k || '').trim().toLowerCase()).filter(Boolean).slice(0, 6);
+    .map((k) => String(k || '').trim().toLowerCase()).filter(Boolean).slice(0, KEYWORDS_WANTED);
   if (!list.length) throw new Error('Could not work out keywords from those topics — add a keyword or two by hand');
   return list;
 }
 
-export async function research(seed: Seed): Promise<Idea[]> {
+// ─── Plan one post ─────────────────────────────────────────────────────
+// One run makes one post. Everything the editor gave — topics, keywords and
+// their own material — goes in, and a title, description and plain-English
+// outline come out. Their material is the spine: the post is built around it,
+// never the other way round.
+export async function planPost(seed: Seed, item?: Item): Promise<{ idea: Idea; plan: Plan; outline_md: string }> {
   const site = SITES[seed.site];
   let keywords = seedKeywords(seed);
   if (!keywords.length) {
     if (!seed.notes?.trim()) throw new Error('Give me either keywords or topics to work from');
     keywords = await keywordsFromTopics({ site: seed.site, country: seed.country, notes: seed.notes });
-    // Save them back so the board shows what this run is actually chasing.
     await db().from('agent_seeds').update({ keyword: keywords.join('\n') }).eq('id', seed.id);
   }
+
+  const author = item
+    ? authorInputs(item, seed)
+    : authorInputs({ inputs: null } as Item, seed);
+  const images = await fetchImages(author.urls);
   const [queryLists, covered] = await Promise.all([
     Promise.all(keywords.map((k) => autocomplete(k, seed.country))),
     coveredTitles(seed.site),
   ]);
-  // Best (lowest) rank wins when the same query surfaces under two keywords.
   const pooled = new Map<string, number>();
   for (const list of queryLists)
     for (const [q, rank] of list) pooled.set(q, Math.min(pooled.get(q) ?? 99, rank));
-  const queries = Array.from(pooled.entries()).sort((a, b) => a[1] - b[1]).slice(0, 200);
-  const prompt = `You are the SEO strategist for ${site.name}.
-${site.profile}
+  const queries = Array.from(pooled.entries()).sort((a, b) => a[1] - b[1]).slice(0, 120);
 
-Seed keywords (treat them as ONE brief — the editor wants ideas that cover this territory, not a fixed quota per keyword):
-${keywords.map((k) => `- ${k}`).join('\n')}
+  const prompt = `You are planning ONE blog post for ${site.name}.
+${site.profile}
 Target market: ${seed.country === 'GLOBAL' ? 'worldwide' : seed.country}. Write everything in English — always, whatever the market.
-${seed.notes ? `Topics the editor already has in mind — unstructured notes. Mine them for ideas and respect any constraints:\n${seed.notes}\n` : ''}
-Real Google autocomplete queries pooled across all the seed keywords (proof people search them; lower number = more popular):
+
+THE EDITOR'S TOPICS — what this post is actually about:
+${seed.notes || '(none given — work from the keywords)'}
+
+Keywords to target:
+${keywords.map((k) => `- ${k}`).join('\n')}
+${author.block}
+${item?.note ? `
+Editor's feedback on the previous plan — apply it:
+${item.note}
+
+Previous outline:
+${item.outline_md || ''}
+` : ''}
+Real Google autocomplete queries for these keywords (proof people search them; lower number = more popular):
 ${queries.length ? queries.map(([q, r]) => `${r}. ${q}`).join('\n') : '(autocomplete returned nothing — rely on search)'}
 
-Already covered on the site or already in the pipeline. Do NOT propose anything that would compete with these:
+Already on the site — don't plan a post that competes with these:
 ${covered.length ? covered.map((t) => `- ${t}`).join('\n') : '(nothing yet)'}
 
-Task: use Google Search to see what currently ranks for the most promising queries. Judge competition by who ranks:
-- high: big authority sites (banks, government, major publishers, Wikipedia) with thorough, current pages
-- medium: a mix
-- low: forums, Quora/Reddit, thin, outdated or off-intent pages, few exact-match titles
-${seed.cluster ? `Task shape: build ONE topic cluster, not a list of unrelated ideas.
-- Exactly one idea has "role": "pillar" — the broad guide for the head term, the page everything else links to. Put it first.
-- The remaining ${seed.ideas_wanted - 1} have "role": "supporting" — each covering ONE distinct subtopic, question or comparison that the pillar can only mention in passing. Together they should cover the subtopics a reader (or an AI generating related sub-queries) would ask next.
-- No two supporting ideas may target the same search, and none may duplicate the pillar's keyword.` : `Propose the ${seed.ideas_wanted} best blog ideas across ALL the seed keywords and the editor's topics combined, ranked by opportunity = real demand × beatable competition × fit for this site's readers. Each idea targets one distinct primary keyword; no two ideas may compete for the same search.`}
+HOW TO BUILD THE OUTLINE — this matters more than anything else here:
+- The editor's topics and their own material decide what the post says. Every section must trace back
+  to something they gave you. You may elaborate, rephrase, explain and illustrate it; you may not
+  invent experiences, numbers or opinions for them.
+- Where their material is thin, go deeper on it rather than wider off it. A short honest post beats a
+  padded one.
+- You may use Google Search to add supporting facts and link to authoritative sources where they
+  genuinely back up a point the editor is already making. Never let an outside fact contradict them,
+  and never build a section out of facts they never mentioned.
+- Plan sections in plain language a reader would recognise, not SEO jargon.
 
-Return ONLY a JSON array (no prose) of objects with exactly these keys:
-{"title": "click-worthy title, max 60 characters, contains the primary keyword",
- "primary_keyword": "an exact query from the autocomplete list where possible",
- "secondary_keywords": ["3–6 closely related queries, from the list where possible"],
- "intent": "informational | commercial | transactional",
- "demand": "high | medium | low",
- "competition": "low | medium | high",
- "score": 1-10,
- "angle": "one sentence: what this post will do better than what ranks today",
- "evidence": "one sentence: what you saw ranking and why the demand is real"${seed.cluster ? `,
- "role": "pillar" for exactly one idea, "supporting" for the rest` : ''}}`;
-  const ideas = parseJson<Idea[]>(await ask(prompt, { search: true }));
-  if (!Array.isArray(ideas) || !ideas.length) throw new Error('No ideas returned');
-  return ideas
-    .filter((i) => i?.title && i?.primary_keyword)
-    .sort((a, b) =>
-      (a.role === 'pillar' ? -1 : 0) - (b.role === 'pillar' ? -1 : 0) || (b.score || 0) - (a.score || 0))
-    .slice(0, seed.ideas_wanted);
+Steps:
+1. Use Google Search on the main keyword to see what already ranks — only to find what the editor's
+   material can beat, never to decide what the post is about.
+2. Build the keyword plan: the main keyword goes in the title, the first 100 words, one heading and the
+   description. Others appear once or twice where they read naturally. Never keyword-stuff.
+3. Write the outline as plain sections — a short heading plus one sentence saying what it covers — in
+   exactly this shape, in this order:
+   a) Introduction — what this post is about and why it matters to the reader, in a few lines.
+   b) The body — as many sections as the editor's material supports. This is where the substance goes:
+      the data points they gave, broken down into their parts wherever a number or an idea needs
+      unpacking, and at least one concrete example per section so a reader can picture it. Say in the
+      section note which of the editor's data points or examples that section is built on.
+   c) Conclusion — pulls together what the post actually covered. Nothing new, no product, no app, no
+      service, no sign-up, ours least of all. It summarises and stops.
+   d) FAQ — last, after the conclusion. Only questions a reader of THIS post would still have; every
+      answer must come from the material already covered above. No new topics smuggled in here.
+   No section anywhere may exist to promote anything — no "why you need a tracker", no tool round-up.
+   The single exception is a product the editor's own material already talks about.
+
+Return ONLY a JSON object (no prose) with exactly these keys:
+{"title": "final title, max 60 characters, contains the main keyword",
+ "slug": "3–6 word kebab-case slug containing the main keyword",
+ "meta_description": "140–155 characters, contains the main keyword, gives a reason to click",
+ "category": "${site.categories.join(' | ')}",
+ "target_words": number (usually 1200–2200 — match how much the editor actually gave you),
+ "primary_keyword": "...",
+ "secondary_keywords": ["..."],
+ "related_terms": ["..."],
+ "questions": ["FAQ questions a reader of THIS post would still have — answerable from its own content"],
+ "cover_image_query": "2–4 word stock-photo search, concrete and visual (e.g. 'woman calculator bills')",
+ "top_results_miss": "one sentence: what the editor's material lets this post say that the ranking pages can't",
+ "angle": "one sentence in plain English: what this post is and who it's for",
+ "outline_md": "the outline in Markdown: ## for each section heading, then a single - bullet under it saying what that section covers. No H1, no nesting."}`;
+
+  const out = parseJson<Plan & { outline_md: string; angle: string }>(await ask(prompt, { search: true, images }));
+  const { outline_md, angle, ...plan } = out;
+  if (!outline_md || !plan.primary_keyword || !plan.title) throw new Error('Plan incomplete');
+  if (!site.categories.includes(plan.category)) plan.category = site.categories[0];
+  plan.secondary_keywords ||= []; plan.related_terms ||= []; plan.questions ||= [];
+  plan.target_words = Math.min(Math.max(Number(plan.target_words) || 1500, 800), 3000);
+
+  const idea: Idea = {
+    title: plan.title,
+    primary_keyword: plan.primary_keyword,
+    secondary_keywords: plan.secondary_keywords,
+    intent: 'informational',
+    demand: '', competition: '', score: 0,
+    angle: angle || plan.top_results_miss || '',
+    evidence: '',
+  };
+  return { idea, plan, outline_md: stripPromo(outline_md, authorText(seed, item)) };
+}
+
+const authorText = (seed: Seed, item?: Item) =>
+  `${seed.inputs?.text || ''}\n${item?.inputs?.text || ''}\n${seed.notes || ''}`;
+
+// A prompt can be ignored; this can't. Drops any outline section that exists to
+// talk about our own products — the conclusion is where it keeps reappearing.
+// Skipped entirely when the editor's own material mentions the product, because
+// then it is their point to make.
+const PROMO = /\bpersonal\s*ft\b|\bpersonalft\b|craftedbyteja/i;
+
+export function stripPromo(md: string, authorMaterial = '') {
+  if (!md || PROMO.test(authorMaterial)) return md;
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let dropping = false;
+  for (const line of lines) {
+    if (/^#{2,3}\s+/.test(line)) dropping = PROMO.test(line);
+    else if (dropping && /^\s*$/.test(line)) continue;
+    if (dropping) continue;
+    // A stray bullet that plugs the app inside an otherwise fine section.
+    if (/^\s*[-*]\s+/.test(line) && PROMO.test(line)) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // ─── Author inputs ─────────────────────────────────────────────────────
@@ -391,46 +495,6 @@ ${urls.length ? [
   ...urls.map((u) => `- ${u}`),
 ].join('\n') : ''}`;
   return { block, urls };
-}
-
-// ─── Outline ───────────────────────────────────────────────────────────
-export async function outline(item: Item, seed: Seed): Promise<{ plan: Plan; outline_md: string }> {
-  const site = SITES[item.site];
-  const author = authorInputs(item, seed);
-  const images = await fetchImages(author.urls);
-  const prompt = `You are planning one blog post for ${site.name}.
-${site.profile}
-Target market: ${seed.country === 'GLOBAL' ? 'worldwide' : seed.country}. Write everything in English — always, whatever the market.
-
-The idea:
-${JSON.stringify(item.idea, null, 2)}
-${item.note ? `\nEditor's feedback on the previous outline — apply it:\n${item.note}\n\nPrevious outline:\n${item.outline_md || ''}\n` : ''}
-${author.block}
-Steps:
-1. Use Google Search on the primary keyword. Study the top-ranking pages and "People also ask": what they all cover (must-haves) and what they miss, get wrong or leave outdated (our edge).
-2. Build the keyword plan. The primary keyword goes in the title, the first 100 words, one H2 and the meta description. Secondary keywords appear once or twice each where they read naturally. Related terms add topical depth. Never keyword-stuff.
-3. Write an outline a reader can follow start to finish: a hook intro that answers the search quickly, H2 sections (H3 inside where useful), each with 1–3 bullet notes on exactly what it covers (facts, examples, numbers to include), a "Frequently asked questions" H2 built from real "People also ask" questions, and a short conclusion with a clear next step.
-
-Return ONLY a JSON object (no prose) with exactly these keys:
-{"title": "final title, max 60 characters, contains the primary keyword",
- "slug": "3–6 word kebab-case slug containing the primary keyword",
- "meta_description": "140–155 characters, contains the primary keyword, gives a reason to click",
- "category": "${site.categories.join(' | ')}",
- "target_words": number (usually 1200–2200 — match the depth of what ranks),
- "primary_keyword": "...",
- "secondary_keywords": ["..."],
- "related_terms": ["..."],
- "questions": ["FAQ questions from People also ask"],
- "cover_image_query": "2–4 word stock-photo search, concrete and visual (e.g. 'woman calculator bills')",
- "top_results_miss": "one sentence",
- "outline_md": "the outline in Markdown: ## for H2, ### for H3, - bullets for notes. No H1."}`;
-  const out = parseJson<Plan & { outline_md: string }>(await ask(prompt, { search: true, images }));
-  const { outline_md, ...plan } = out;
-  if (!outline_md || !plan.primary_keyword) throw new Error('Outline incomplete');
-  if (!site.categories.includes(plan.category)) plan.category = site.categories[0];
-  plan.secondary_keywords ||= []; plan.related_terms ||= []; plan.questions ||= [];
-  plan.target_words = Math.min(Math.max(Number(plan.target_words) || 1500, 800), 3000);
-  return { plan, outline_md };
 }
 
 // ─── Draft ─────────────────────────────────────────────────────────────
@@ -497,8 +561,20 @@ ${item.outline_md}
 ---
 
 ${author.block}
+WHERE THE CONTENT COMES FROM — the rule this post is judged on:
+The editor's topics and their own material above are the whole substance of this post. Build every
+section out of what they gave you. You may elaborate it, rephrase it, explain it properly, walk through
+it step by step, and add illustrative examples that help a reader understand their point — an example
+you make up to explain something must read as an illustration, never as something the editor did or
+measured. You may NOT invent experiences, opinions, numbers or events for them, and you may not fill a
+thin section with generic advice. If their material does not support a section in the outline, cut that
+section rather than making it up. A shorter honest post is the correct outcome.
+Outside facts are allowed only in support: a figure, rule or date you confirm by search, used to back up
+a point the editor is already making. Never let one contradict them, never present their private numbers
+as public data, and never let outside facts become the backbone of the post.
+
 Facts: use Google Search to confirm every number, rate, limit, rule or date you state. Include at least one short verbatim quote (one sentence, in quotation marks, attributed and linked) from an official source where it genuinely supports a point — quotable evidence is what AI answer engines cite. Never invent a quote. Prefer current figures and write "as of ${today}" for anything that changes. If you can't confirm a number, leave it out.
-Links: add 2–4 links to genuinely authoritative sources — regulators and government (rbi.org.in, sebi.gov.in, incometax.gov.in, epfindia.gov.in), or the official site of the bank/AMC/insurer being discussed. Never cite content aggregators or SEO blogs (ClearTax, BankBazaar, Groww/Zerodha blogs, Bajaj Finserv articles, news roundups). Use URLs you are certain exist — prefer homepages over deep links.${internal.length ? `
+Links: add 2–4 links to genuinely authoritative sources for whatever this post is about — the primary source itself: the organisation, regulator, standards body, researcher, documentation or official site behind the claim. Never cite content aggregators, SEO blogs or news round-ups rewriting someone else's work. Use URLs you are certain exist — prefer homepages over deep links.${internal.length ? `
 Internal links — use these paths exactly, and only where the link genuinely helps the reader:
 ${internal.map((p) => `- [${p.title}](${p.href})${siblings.some((sib) => sib.href === p.href) ? ' (same topic cluster)' : ''}`).join('\n')}${
   isPillar && siblings.length
@@ -526,7 +602,6 @@ Return only the Markdown body.`;
   const used = new Set<number>();
   const cover = await pexels(plan.cover_image_query || plan.primary_keyword, used);
   body = await replaceImages(body, used);
-  if (site.disclaimer) body += `\n\n---\n\n${site.disclaimer}\n`;
 
   const phrases = await phraseCheck(body);
   return { body, cover, seo: { ...seoReport(body, plan), phrases } };
@@ -537,7 +612,22 @@ Return only the Markdown body.`;
 // one verbatim. A hit means the sentence exists elsewhere — copied, or a
 // deliberate quote that grew too long. Catches lifted sentences, not
 // reworded copying (no tool does that reliably, paid ones included).
+// Every sentence in the post worth checking — the whole body, not a sample.
+// Capped so one enormous post can't fan out into hundreds of searches.
+export function allPhrases(md: string, cap = 150) {
+  return sentencesOf(md).slice(0, cap);
+}
+
 export function pickPhrases(md: string, max = 5) {
+  const sentences = sentencesOf(md);
+  // Spread the picks across the post rather than taking five from the intro.
+  const step = Math.max(1, Math.floor(sentences.length / max));
+  const picked: string[] = [];
+  for (let i = 0; i < sentences.length && picked.length < max; i += step) picked.push(sentences[i]);
+  return picked;
+}
+
+function sentencesOf(md: string) {
   const prose = md
     .split('\n')
     .filter((l) => !/^\s*(#|>|-|\d+\.|!\[|\*Photo)/.test(l) && l.trim())
@@ -548,20 +638,15 @@ export function pickPhrases(md: string, max = 5) {
     // Drop anything inside quotation marks: those quotes are attributed on
     // purpose, so finding them elsewhere proves nothing.
     .replace(/["“][^"”]{20,}["”]/g, ' ');
-  const sentences = prose.split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim().replace(/\s+/g, ' '))
-    .filter((s) => {
-      const words = s.split(' ').length;
-      return words >= 9 && words <= 22 && !/[|{}]/.test(s);
+  return prose.split(/(?<=[.!?])\s+/)
+    .map((x) => x.trim().replace(/\s+/g, ' '))
+    .filter((x) => {
+      const words = x.split(' ').length;
+      return words >= 9 && words <= 22 && !/[|{}]/.test(x);
     });
-  // Spread the picks across the post rather than taking five from the intro.
-  const step = Math.max(1, Math.floor(sentences.length / max));
-  const picked: string[] = [];
-  for (let i = 0; i < sentences.length && picked.length < max; i += step) picked.push(sentences[i]);
-  return picked;
 }
 
-export interface PhraseHit { phrase: string; url: string | null }
+export interface PhraseHit { phrase: string; url: string | null; unchecked?: boolean }
 
 export async function phraseCheck(md: string, override?: string[]): Promise<PhraseHit[]> {
   const phrases = override ?? pickPhrases(md);
@@ -590,6 +675,23 @@ Return ONLY a JSON array with one object per sentence, in the same order:
     // an empty list renders as "not checked" in the review UI.
     return [];
   }
+}
+
+// The whole post, checked. Sentences go out in small batches because one
+// search call per sentence would be dozens of round trips; batching keeps the
+// same strict "word for word" test while staying inside a request.
+export async function phraseCheckAll(md: string, batch = 8, concurrency = 3): Promise<PhraseHit[]> {
+  const phrases = allPhrases(md);
+  if (!phrases.length) return [];
+  const batches: string[][] = [];
+  for (let i = 0; i < phrases.length; i += batch) batches.push(phrases.slice(i, i + batch));
+  const results = await pool(batches, concurrency, (group) => phraseCheck(md, group));
+  // A batch that failed comes back empty; keep its sentences as unchecked
+  // rather than silently reporting them as original.
+  return batches.flatMap((group, i) =>
+    results[i]?.length === group.length
+      ? results[i]
+      : group.map((phrase) => ({ phrase, url: null, unchecked: true })));
 }
 
 function cleanMarkdown(text: string) {

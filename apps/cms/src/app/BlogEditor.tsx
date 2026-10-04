@@ -258,15 +258,138 @@ export default function BlogEditor({ id }: Props) {
           </button>
         </div>
 
-        {/* Right: preview */}
-        <div className={`${showPreview ? '' : 'hidden lg:block'} bg-18-surface border border-18-border rounded-2xl p-5 max-h-[85vh] overflow-y-auto sticky top-4`}>
+        {/* Right: what the content measures, then the preview itself */}
+        <div className={`${showPreview ? '' : 'hidden lg:block'} space-y-3 sticky top-4`}>
+        <ContentStats bodyMd={row.body_md || ''} />
+        <div className="bg-18-surface border border-18-border rounded-2xl p-5 max-h-[85vh] overflow-y-auto">
           <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold mb-3">Live preview</p>
           {row.cover_url && <img src={row.cover_url} alt="" className="rounded-xl w-full mb-4" />}
           <h1 className="text-2xl font-black text-white mb-1">{row.title || <span className="text-white/30 italic">Untitled</span>}</h1>
           {row.excerpt && <p className="text-sm text-white/60 mb-4">{row.excerpt}</p>}
           <div className="prose-crafted" dangerouslySetInnerHTML={{ __html: previewHtml }} />
         </div>
+        </div>
       </div>
+    </div>
+  );
+}
+
+// What the draft measures: how much of it already exists elsewhere, and which
+// words it actually leans on. Word counts are local and live; the originality
+// check searches every sentence in the post, so it runs only when you ask.
+const STOP = new Set(('a an and are as at be been but by can could do does for from had has have how i if in into is it its may me more most my no not of on one only or other our out over own said same should so some such than that the their them then there these they this those to too up very was we were what when where which who why will with would you your').split(' '));
+
+function ContentStats({ bodyMd }: { bodyMd: string }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ sampled: number; unchecked?: number; phrases: { phrase: string; url: string | null; unchecked?: boolean }[] } | null>(null);
+  const [checkErr, setCheckErr] = useState<string | null>(null);
+
+  // Strip markdown furniture so headings and links don't skew the counts.
+  const top = useMemo(() => {
+    const words = (bodyMd || '')
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .toLowerCase()
+      .match(/[a-z][a-z'-]{2,}/g) || [];
+    const counts = new Map<string, number>();
+    for (const w of words) if (!STOP.has(w)) counts.set(w, (counts.get(w) || 0) + 1);
+    const total = words.length;
+    return {
+      total,
+      list: Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
+        .map(([word, n]) => ({ word, n, pct: total ? (n / total) * 100 : 0 })),
+    };
+  }, [bodyMd]);
+
+  const check = async () => {
+    setBusy(true); setCheckErr(null);
+    const { data: { session } } = await supabase.auth.getSession();
+    try {
+      const r = await fetch('/api/blog/originality', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ body_md: bodyMd }),
+      });
+      const j = await r.json();
+      if (!r.ok) setCheckErr(j.error || `Check failed (${r.status})`);
+      else setResult(j);
+    } catch (e: any) { setCheckErr(e.message || String(e)); }
+    setBusy(false);
+  };
+
+  const copied = result?.phrases.filter((p) => p.url) || [];
+  const pct = result?.sampled ? Math.round((copied.length / result.sampled) * 100) : 0;
+
+  return (
+    <div className="bg-18-surface border border-18-border rounded-2xl p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Found elsewhere on the web</p>
+        <button
+          onClick={check}
+          disabled={busy || !bodyMd.trim()}
+          className="text-[11px] font-bold text-18-orange hover:underline disabled:opacity-40 disabled:no-underline"
+        >
+          {busy ? 'Checking every sentence…' : result ? 'Check again' : 'Check the whole post'}
+        </button>
+      </div>
+
+      {checkErr && <p className="text-[11px] text-red-400 mb-2">{checkErr}</p>}
+
+      {!result && !checkErr && (
+        <p className="text-[11px] text-white/40 mb-3">
+          Searches every sentence in the post for an exact, word-for-word match elsewhere on the web.
+          A long post takes a minute or two. Not run yet.
+        </p>
+      )}
+
+      {result && (
+        <div className="mb-3">
+          <p className={`text-2xl font-black ${pct === 0 ? 'text-emerald-400' : pct <= 40 ? 'text-amber-400' : 'text-red-400'}`}>
+            {pct}%
+          </p>
+          <p className="text-[11px] text-white/50">
+            {copied.length} of {result.sampled} sentences in this post already exist on another site.
+            {pct === 0 ? ' Nothing matched.' : ''}
+          </p>
+          {!!result.unchecked && (
+            <p className="text-[11px] text-amber-400 mt-0.5">
+              {result.unchecked} sentence{result.unchecked === 1 ? '' : 's'} could not be checked — the
+              percentage is out of the rest. Run it again for a complete answer.
+            </p>
+          )}
+          {copied.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {copied.map((p) => (
+                <li key={p.phrase} className="text-[11px] text-white/70">
+                  “{p.phrase.slice(0, 90)}{p.phrase.length > 90 ? '…' : ''}”{' '}
+                  <a href={p.url!} target="_blank" rel="noopener noreferrer" className="text-18-orange hover:underline break-all">
+                    {new URL(p.url!).hostname}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <p className="text-[10px] uppercase tracking-widest text-white/40 font-bold mb-2 pt-2 border-t border-18-border">
+        Most used words · {top.total} total
+      </p>
+      {top.list.length === 0 ? (
+        <p className="text-[11px] text-white/30">Nothing written yet.</p>
+      ) : (
+        <ul className="flex flex-wrap gap-1.5">
+          {top.list.map((w) => (
+            <li key={w.word}
+              className="text-[11px] rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-white/70"
+              title={`${w.n} times · ${w.pct.toFixed(1)}% of all words`}>
+              {w.word} <span className="text-white/40">{w.n}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

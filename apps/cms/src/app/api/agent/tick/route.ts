@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { AUTHOR_ALLOWLIST } from '@/lib/allowlist';
-import { db, research, outline, draft, savePost, Item, Seed } from '@/lib/agent';
+import { db, planPost, draft, savePost, Item, Seed } from '@/lib/agent';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -45,11 +45,14 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ seeds: seeds?.length || 0, items: items?.length || 0 });
 }
 
+// One run makes one post: plan it and park it at the outline step for review.
 async function runSeed(seed: Seed) {
   const sb = db();
   try {
-    const ideas = await research(seed);
-    const { error } = await sb.from('agent_items').insert(ideas.map((idea) => ({ seed_id: seed.id, site: seed.site, idea })));
+    const { idea, plan, outline_md } = await planPost(seed);
+    const { error } = await sb.from('agent_items').insert({
+      seed_id: seed.id, site: seed.site, stage: 'outline_review', idea, plan, outline_md,
+    });
     if (error) throw error;
     await sb.from('agent_seeds').update({ status: 'done', error: null, locked_at: null }).eq('id', seed.id);
   } catch (e: any) {
@@ -66,8 +69,9 @@ async function runItem(item: Item) {
     const done = { note: null, error: null, locked_at: null, attempts: 0 };
 
     if (item.stage === 'outline_queued') {
-      const { plan, outline_md } = await outline(item, seed as Seed);
-      await sb.from('agent_items').update({ ...done, stage: 'outline_review', plan, outline_md }).eq('id', item.id);
+      // Re-plan: the editor sent the outline back with a note.
+      const { idea, plan, outline_md } = await planPost(seed as Seed, item);
+      await sb.from('agent_items').update({ ...done, stage: 'outline_review', idea, plan, outline_md }).eq('id', item.id);
     } else {
       const { body, cover, seo } = await draft(item, seed as Seed);
       const post_id = await savePost(item, body, cover);
