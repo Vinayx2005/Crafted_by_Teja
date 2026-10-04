@@ -13,7 +13,8 @@ export const FONT_CSS = 'https://fonts.googleapis.com/css2?family=EB+Garamond:it
 export const DEFAULTS = {
   font: 'Times New Roman', size: 11, lineHeight: 1.5, paraSpacing: 6,
   header: { show: true, opacity: 0.55, size: 8.5 },
-  pageNumbers: { show: true, position: 'footer', align: 'center', format: 'n', size: 9, start: 1 },
+  // from: "<chapterId>:0" — the chapter or empty page numbering begins on ('' = first one after the cover)
+  pageNumbers: { show: true, position: 'footer', align: 'center', format: 'n', size: 9, start: 1, from: '' },
   translate: { on: false, from: 'en', to: 'te' },
 };
 export function withDefaults(s = {}) {
@@ -108,7 +109,7 @@ let host;
 // chapters: [{ id, kind, title, html }] in reading order (html already translated if needed).
 // → { pages: [{ kind, first, chapter, html }], starts: { chapterId: pageIndex } }
 // ponytail: re-lays out the whole book on every change; cache per chapter if long books feel slow.
-export async function paginate(title, author, chapters, s) {
+export async function paginate(title, tagline, chapters, s) {
   await imagesReady(chapters);
   if (!host) {
     host = document.createElement('div');
@@ -117,7 +118,7 @@ export async function paginate(title, author, chapters, s) {
     document.body.append(host);
   }
   applyVars(host, s);
-  const pages = [{ kind: 'title', html: `<div class="bp-cover"><h1>${esc(title)}</h1>${author ? `<p>${esc(author)}</p>` : ''}</div>` }];
+  const pages = [{ kind: 'title', html: `<div class="bp-cover"><h1>${esc(title)}</h1>${tagline ? `<div class="bp-tag">${tagline}</div>` : ''}</div>${s.author ? `<div class="bp-author">${esc(s.author)}</div>` : ''}` }];
   const starts = {};
   const newBody = () => {
     host.innerHTML = '<div class="bp-inner"><div class="bp-body"></div></div>';
@@ -125,10 +126,10 @@ export async function paginate(title, author, chapters, s) {
   };
   for (const ch of chapters) {
     starts[ch.id] = pages.length;
-    if (ch.kind === 'blank') { pages.push({ kind: 'blank', html: '' }); continue; }
-    let body = newBody(), first = true;
+    if (ch.kind === 'blank') { pages.push({ kind: 'blank', html: '', id: ch.id, k: 0 }); continue; }
+    let body = newBody(), first = true, k = 0;
     if (ch.title) body.insertAdjacentHTML('beforeend', `<h1 class="bp-chtitle">${esc(ch.title)}</h1>`);
-    const flush = () => { pages.push({ kind: 'text', first, chapter: ch.title, html: body.innerHTML }); first = false; body = newBody(); };
+    const flush = () => { pages.push({ kind: 'text', first, chapter: ch.title, html: body.innerHTML, id: ch.id, k: k++ }); first = false; body = newBody(); };
     const queue = blocksOf(ch.html);
     while (queue.length) {
       const b = queue.shift();
@@ -143,16 +144,27 @@ export async function paginate(title, author, chapters, s) {
     if (first || body.childNodes.length) flush();
   }
   host.innerHTML = '';
+  // Back cover. It must land on a left-hand page on its own (an even page
+  // count), so pad with an empty page first when needed — as printed books do.
+  if (pages.length % 2 === 0) pages.push({ kind: 'blank', html: '' });
+  pages.push({ kind: 'back', html: `<div class="bp-back">${s.backHtml || ''}</div>${s.author ? `<div class="bp-author">${esc(s.author)}</div>` : ''}` });
   return { pages, starts };
 }
 
 const NUM_FORMATS = { n: n => `${n}`, dash: n => `– ${n} –`, page: n => `Page ${n}` };
 export const NUM_FORMAT_LABELS = { n: '12', dash: '– 12 –', page: 'Page 12' };
 
+// Index of the page that carries the starting number (pages before it are unnumbered).
+export function numberStart(pages, s) {
+  const id = (s.pageNumbers.from || '').split(':')[0]; // older saves may name a page inside a chapter
+  const i = pages.findIndex(p => p.id === id && p.k === 0);
+  return i > 0 ? i : 1;
+}
+
 // Full inner HTML for page i, including running header and page number.
-export function pageHtml(p, i, s) {
+export function pageHtml(p, i, s, from = 1) {
   const pn = s.pageNumbers, hd = s.header;
-  const showNum = pn.show && p.kind === 'text';
+  const showNum = pn.show && p.kind === 'text' && i >= from;
   const showHead = hd.show && p.kind === 'text' && !p.first && p.chapter;
   const recto = i % 2 === 0; // page 0 (title) is a right-hand page
   const align = pn.align === 'outer' ? (recto ? 'right' : 'left') : pn.align;
@@ -160,11 +172,11 @@ export function pageHtml(p, i, s) {
     const cols = { left: '', center: '', right: '' };
     if (top && showHead) cols.center += `<span style="opacity:${hd.opacity};font-size:${hd.size}pt">${esc(p.chapter)}</span>`;
     if (showNum && (pn.position === 'header') === top)
-      cols[align] += `<span style="font-size:${pn.size}pt">${(NUM_FORMATS[pn.format] || NUM_FORMATS.n)(i - 1 + (+pn.start || 1))}</span>`;
+      cols[align] += `<span style="font-size:${pn.size}pt">${(NUM_FORMATS[pn.format] || NUM_FORMATS.n)(i - from + (+pn.start || 1))}</span>`;
     if (!cols.left && !cols.center && !cols.right) return '';
     return `<div class="bp-zone ${top ? 'top' : 'bottom'}"><span>${cols.left}</span><span>${cols.center}</span><span>${cols.right}</span></div>`;
   };
-  return `${zone(true)}${p.kind === 'title' ? p.html : `<div class="bp-body">${p.html}</div>`}${zone(false)}`;
+  return `${zone(true)}${p.kind === 'title' || p.kind === 'back' ? p.html : `<div class="bp-body">${p.html}</div>`}${zone(false)}`;
 }
 
 // ---------- page-flip preview ----------
@@ -191,15 +203,16 @@ export class BookView {
     book.className = 'flipbook';
     stage.querySelector('.flipbook')?.remove();
     stage.append(book);
+    const from = numberStart(pages, s);
     const nodes = pages.map((p, i) => {
       const page = document.createElement('div');
       page.className = 'page';
-      page.dataset.density = p.kind === 'title' ? 'hard' : 'soft';
+      page.dataset.density = p.kind === 'title' || p.kind === 'back' ? 'hard' : 'soft';
       const inner = document.createElement('div');
       inner.className = 'bp-inner';
       inner.style.transform = `scale(${scale})`;
       inner.style.transformOrigin = '0 0';
-      inner.innerHTML = pageHtml(p, i, s);
+      inner.innerHTML = pageHtml(p, i, s, from);
       applyVars(inner, s);
       page.append(inner);
       return page;
@@ -210,7 +223,21 @@ export class BookView {
       mobileScrollSupport: false, startPage: this.at,
     });
     this.flip.loadFromHTML(nodes);
-    this.flip.on('flip', e => { this.at = e.data; this.onFlip?.(e.data, pages.length); });
+    // `this.at` still holds the page we are leaving while the animation starts.
+    // Buttons/clicks animate via 'flipping'; a mouse drag or swipe goes through
+    // 'user_fold' (sometimes then 'flipping'). Sound once per turn, at its start.
+    let turning = false;
+    const cover = i => i === 0 || i === pages.length - 1; // front or back cover
+    this.flip.on('changeState', e => {
+      if ((e.data === 'flipping' || e.data === 'user_fold') && !turning) { turning = true; this.sound?.(cover(this.at) ? 'open' : 'turn'); }
+      if (e.data === 'read') turning = false;
+    });
+    this.flip.on('flip', e => {
+      const from = this.at;
+      this.at = e.data;
+      if (cover(e.data) && !cover(from)) this.sound?.('close');
+      this.onFlip?.(e.data, pages.length);
+    });
     this.onFlip?.(this.at, pages.length);
   }
   next() { this.flip?.flipNext(); }
@@ -241,7 +268,8 @@ export function exportPdf(title, pages, s) {
     </head><body></body></html>`);
   d.close();
   applyVars(d.body, s);
-  d.body.innerHTML = pages.map((p, i) => `<div class="bp-inner">${pageHtml(p, i, s)}</div>`).join('');
+  const from = numberStart(pages, s);
+  d.body.innerHTML = pages.map((p, i) => `<div class="bp-inner">${pageHtml(p, i, s, from)}</div>`).join('');
   const go = async () => {
     await d.fonts?.ready;
     await Promise.all([...d.images].map(i => i.decode().catch(() => {})));
@@ -255,22 +283,24 @@ export function exportPdf(title, pages, s) {
 
 // DOC: Word-flavoured HTML. Word opens it with A5 pages and the book font;
 // running headers / page numbers are only in DOCX and PDF.
-export function exportDoc(title, author, chapters, s) {
+export function exportDoc(title, tagline, chapters, s) {
   const body = chapters.map((c, i) => c.kind === 'blank'
     ? `<p style="page-break-before:always">&nbsp;</p>`
     : `<h1 style="page-break-before:always;text-align:center">${esc(c.title)}</h1>${(c.html || '').replace(/&nbsp;| /g, ' ')}`).join('');
+  const back = s.backHtml || s.author
+    ? `<div style="page-break-before:always">${s.backHtml || ''}${s.author ? `<p style="text-align:center;margin-top:60pt;letter-spacing:1pt">${esc(s.author)}</p>` : ''}</div>` : '';
   const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta charset="utf-8"><title>${esc(title)}</title>
 <style>@page WordSection1 { size: 148mm 210mm; margin: 18mm 16mm; } div.WordSection1 { page: WordSection1; }
 body { font-family: ${fontStack(s.font)}; font-size: ${s.size}pt; line-height: ${s.lineHeight}; }
 p { margin: 0 0 ${s.paraSpacing}pt; text-align: justify; } img { max-width: 100%; }</style></head>
-<body><div class="WordSection1"><h1 style="text-align:center;margin-top:200pt">${esc(title)}</h1>${author ? `<p style="text-align:center">${esc(author)}</p>` : ''}${body}</div></body></html>`;
+<body><div class="WordSection1"><h1 style="text-align:center;margin-top:200pt">${esc(title)}</h1>${tagline ? `<div style="text-align:center">${tagline.replace(/text-align:\s*\w+;?/g, '')}</div>` : ''}${s.author ? `<p style="text-align:center;margin-top:170pt;letter-spacing:1pt">${esc(s.author)}</p>` : ''}${body}${back}</div></body></html>`;
   download(new Blob(['﻿', html], { type: 'application/msword' }), fileName(title, 'doc'));
 }
 
 // DOCX: built natively with the `docx` library — A5, one section per chapter,
 // chapter name as running header, page numbers per the book's settings.
-export async function exportDocx(title, author, chapters, s) {
+export async function exportDocx(title, tagline, chapters, s) {
   const D = await import('https://cdn.jsdelivr.net/npm/docx@9.5.1/+esm');
   const mm = D.convertMillimetersToTwip;
   const font = s.font, half = pt => Math.round(pt * 2);
@@ -357,18 +387,31 @@ export async function exportDocx(title, author, chapters, s) {
     if (withNum) kids.push(new D.Paragraph({ alignment: numAlign(odd), children: numRun() }));
     return new Kind({ children: kids.length ? kids : [new D.Paragraph('')] });
   };
-  const inHead = pn.show && pn.position === 'header', inFoot = pn.show && pn.position === 'footer';
-  const page = { size: { width: mm(148), height: mm(210) }, margin: { top: mm(18.5), bottom: mm(18.5), left: mm(16), right: mm(16), header: mm(8), footer: mm(8) } };
+  const pageBase = { size: { width: mm(148), height: mm(210) }, margin: { top: mm(18.5), bottom: mm(18.5), left: mm(16), right: mm(16), header: mm(8), footer: mm(8) } };
+
+  // tagline is rich text: one centred paragraph per line, keeping its formatting
+  const tagTpl = document.createElement('template');
+  tagTpl.innerHTML = tagline || '';
+  const tagParas = await Promise.all([...tagTpl.content.children].map(async el =>
+    new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: await runs(el, { size: half(s.size * 1.05), font }) })));
 
   const sections = [{
-    properties: { page: { ...page, pageNumbers: { start: Math.max(0, (+pn.start || 1) - 1) } } },
+    properties: { page: pageBase },
     headers: { default: zone(D.Header, false, false) }, footers: { default: zone(D.Footer, false, false) },
     children: [
       new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing: { before: 3600, after: 360 }, children: [new D.TextRun({ text: title, size: half(s.size * 2.4), font })] }),
-      ...(author ? [new D.Paragraph({ alignment: D.AlignmentType.CENTER, children: [new D.TextRun({ text: author, size: half(s.size * 1.05), font })] })] : []),
+      ...tagParas,
+      // ponytail: pushed toward the page foot with spacing, not anchored; use a docx frame if it must sit exactly
+      ...(s.author ? [new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing: { before: Math.max(600, 5200 - tagParas.length * 360) }, children: [new D.TextRun({ text: s.author, size: half(s.size * 1.15), font, smallCaps: true })] })] : []),
     ],
   }];
-  for (const c of chapters) {
+  // numbering starts at the chosen chapter / empty page (its own section)
+  const fromId = pn.from.split(':')[0];
+  const startAt = Math.max(0, chapters.findIndex(c => c.id === fromId));
+  for (const [ci, c] of chapters.entries()) {
+    const numbered = ci >= startAt;
+    const inHead = numbered && pn.show && pn.position === 'header', inFoot = numbered && pn.show && pn.position === 'footer';
+    const page = ci === startAt ? { ...pageBase, pageNumbers: { start: +pn.start || 1 } } : pageBase;
     if (c.kind === 'blank') {
       sections.push({ properties: { page }, headers: { default: zone(D.Header, false, false) }, footers: { default: zone(D.Footer, false, false) }, children: [new D.Paragraph('')] });
       continue;
@@ -385,9 +428,17 @@ export async function exportDocx(title, author, chapters, s) {
       ],
     });
   }
+  if (s.backHtml || s.author) {
+    const none = { headers: { default: zone(D.Header, false, false) }, footers: { default: zone(D.Footer, false, false) } };
+    sections.push({ properties: { page: pageBase }, ...none, children: [
+      new D.Paragraph({ spacing: { before: 600 }, children: [] }),
+      ...await blocks(s.backHtml),
+      ...(s.author ? [new D.Paragraph({ alignment: D.AlignmentType.CENTER, spacing: { before: 1200 }, children: [new D.TextRun({ text: s.author, size: half(s.size * 1.15), font, smallCaps: true })] })] : []),
+    ] });
+  }
 
   const doc = new D.Document({
-    title, creator: author || undefined,
+    title, creator: s.author || undefined, description: tagTpl.content.textContent.trim() || undefined,
     evenAndOddHeaderAndFooters: true,
     styles: { default: { document: { run: { font, size: half(s.size) } } } },
     numbering: { config: [{ reference: 'num', levels: [{ level: 0, format: D.LevelFormat.DECIMAL, text: '%1.', alignment: D.AlignmentType.START }] }] },

@@ -9,7 +9,7 @@
 }
 .bp-inner {
   position: relative; width: 559px; height: 794px; overflow: hidden;
-  background: #fffdf8; color: #161616;
+  background: #f7f1e6; color: #161616;
   font-family: var(--bf); font-size: var(--bs); line-height: var(--lh);
 }
 .bp-body {
@@ -46,6 +46,9 @@
 
 .bp-cover { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px; text-align: center; }
 .bp-cover h1 { margin: 0 0 18px; font-size: 2.6em; line-height: 1.15; font-weight: 600; }
-.bp-cover p { margin: 0; font-size: 1.05em; opacity: .65; letter-spacing: .04em; }
-.bp-cover::after { content: ""; width: 60px; height: 1px; background: #999; margin-top: 26px; order: 1; }
-.bp-cover p { order: 2; margin-top: 18px; }
+.bp-tag { order: 2; margin-top: 18px; font-size: 1.05em; opacity: .75; }
+.bp-tag p { margin: 0; text-align: center !important; }
+.bp-back { position: absolute; left: 60px; right: 60px; top: 90px; bottom: 170px; overflow: hidden; display: flex; flex-direction: column; justify-content: center; text-align: justify; }
+.bp-back p { margin: 0 0 var(--ps); }
+.bp-back h1, .bp-back h2, .bp-back h3 { text-align: center; margin: 0 0 .6em; line-height: 1.25; }
+.bp-author { position: absolute; left: 60px; right: 60px; bottom: 120px; text-align: center; font-size: 1.15em; letter-spacing: .08em; font-variant: small-caps; }

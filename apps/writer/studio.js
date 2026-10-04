@@ -5,6 +5,7 @@
 import { sb, user, store, signOut, notify } from './common.js';
 import { FONTS, FONT_CSS, withDefaults, applyVars, paginate, BookView, NUM_FORMAT_LABELS, exportPdf, exportDoc, exportDocx } from './book.js';
 import { LANGS, SOURCES, ROMAN, translateHtml } from './lang.js';
+import { play } from './sound.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -128,7 +129,10 @@ async function home() {
     </section>`;
   const create = async e => {
     e.preventDefault();
-    const { data: p, error } = await sb.from('projects').insert({ title: 'Untitled book' }).select().single();
+    const author = await askAuthor();
+    if (author === null) return; // cancelled
+    store.set('last_author', author);
+    const { data: p, error } = await sb.from('projects').insert({ title: 'Untitled book', settings: { author } }).select().single();
     if (error) return failed('Creating the book', error);
     const { data: ch, error: e2 } = await sb.from('chapters').insert({ project_id: p.id, position: 1, title: 'Chapter 1' }).select().single();
     if (e2) return failed('Creating the first chapter', e2);
@@ -146,6 +150,32 @@ async function home() {
   });
 }
 
+// New-book popup. Resolves to the author name ('' is fine), or null if cancelled.
+function askAuthor() {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'ask';
+  const guess = store.get('last_author', '') || user.user_metadata?.full_name || user.user_metadata?.name || '';
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h3>New book</h3>
+      <label class="lbl" for="askAuthor">Author name</label>
+      <input class="in" id="askAuthor" maxlength="120" placeholder="How your name appears on the cover" value="${esc(guess)}" autocomplete="name">
+      <p>Shown at the bottom of the cover. You can change it later.</p>
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" value="ok">Create book</button>
+      </div>
+    </form>`;
+  document.body.append(dlg);
+  dlg.showModal();
+  const input = dlg.querySelector('input');
+  input.select();
+  return new Promise(res => dlg.addEventListener('close', () => {
+    res(dlg.returnValue === 'ok' ? input.value.trim() : null);
+    dlg.remove();
+  }));
+}
+
 // ---------- the book preview (shared by project + chapter views) ----------
 const opts = (list, cur) => list.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${esc(l)}</option>`).join('');
 
@@ -159,22 +189,47 @@ function previewHtml() {
         <label>Line <select class="sel" data-set="lineHeight">${opts([1, 1.15, 1.3, 1.5, 1.75, 2].map(n => [n, n]), s.lineHeight)}</select></label>
         <label>Paragraph <select class="sel" data-set="paraSpacing">${opts([0, 3, 6, 9, 12, 18].map(n => [n, n + ' pt']), s.paraSpacing)}</select></label>
       </div>
+      <h2 class="pv-title" id="pvTitle">${esc(project.title)}</h2>
+      <div class="pv-tagline" id="pvTagline">${taglineHtml()}</div>
       <div class="stage" id="stage"><span class="pv-busy" id="pvBusy">Updating…</span></div>
       <div class="pv-nav">
         <button class="btn sm" id="pvPrev" aria-label="Previous page">‹ Prev</button>
+        <select class="sel" id="pvJump" aria-label="Go to"></select>
         <span id="pvAt">—</span>
         <button class="btn sm" id="pvNext" aria-label="Next page">Next ›</button>
+        <button class="btn sm icon" id="pvSound"></button>
       </div>
     </section>`;
 }
 
 let starts = {};
+let picked = null; // page chosen in the jump list, kept selected while it is on screen
 let previewVersion = 0;
 function mountPreview(goTo) {
   const stage = $('#stage');
   bookView = new BookView(stage, (at, total) => {
-    $('#pvAt').textContent = at === 0 ? `Cover · ${total} pages` : `Page ${at + 1} of ${total}`;
+    // In a two-page spread both `at` and `at + 1` are showing.
+    const last = bookView?.flip?.getOrientation?.() === 'landscape' && at > 0 && at < total - 1 ? at + 1 : at;
+    $('#pvAt').textContent = `${last > at ? `${at + 1}–${last + 1}` : at + 1} / ${total}`;
+    // Show what's open: the item just picked if it's visible, else the one the last visible page belongs to.
+    const jump = $('#pvJump');
+    if (picked != null && picked >= at && picked <= last) { jump.value = String(picked); return; }
+    picked = null;
+    const here = [...jump.options].filter(o => +o.value <= last).pop();
+    if (here) jump.value = here.value;
   });
+  bookView.sound = kind => store.get('book_sound', true) && play(kind);
+  const soundBtn = $('#pvSound');
+  const showSound = () => {
+    const on = store.get('book_sound', true);
+    soundBtn.textContent = on ? '🔊' : '🔇';
+    soundBtn.title = on ? 'Page sounds on — click to mute' : 'Page sounds off — click to turn on';
+    soundBtn.setAttribute('aria-label', soundBtn.title);
+    soundBtn.setAttribute('aria-pressed', String(on));
+  };
+  soundBtn.onclick = () => { store.set('book_sound', !store.get('book_sound', true)); showSound(); };
+  showSound();
+  $('#pvJump').onchange = e => { picked = +e.target.value; bookView?.go(picked); };
   $('#pvPrev').onclick = () => bookView?.prev();
   $('#pvNext').onclick = () => bookView?.next();
   view.querySelectorAll('[data-set]').forEach(sel => sel.onchange = () => {
@@ -195,14 +250,46 @@ async function refresh(goTo) {
     ...c, html: tr.on && c.kind === 'chapter' ? await translateHtml(c.html, tr.from, tr.to, myWords) : c.html,
   })));
   if (my !== previewVersion || !bookView) return;
-  const out = await paginate(project.title, '', flow, s);
+  const out = await paginate(project.title, taglineHtml(), flow, s);
   if (my !== previewVersion || !bookView) return;
   starts = out.starts;
   lastPages = out.pages; lastFlow = flow;
+  fillJumpOptions();
   bookView.show(out.pages, s, goTo ? out.starts[goTo] ?? 0 : undefined);
+  fillStartOptions();
   $('#pvBusy')?.classList.remove('on');
 }
 let lastPages = [], lastFlow = [];
+
+// How a chapter or empty page is named in dropdowns.
+function itemName(c) {
+  if (c.kind !== 'blank') return esc(c.title || 'Untitled chapter');
+  const blanks = chapters.filter(x => x.kind === 'blank');
+  return blanks.length > 1 ? `Empty page ${blanks.indexOf(c) + 1}` : 'Empty page';
+}
+
+// Jump list under the book: cover, every chapter / empty page, back cover.
+function fillJumpOptions() {
+  const sel = $('#pvJump');
+  if (!sel) return;
+  sel.innerHTML = [
+    `<option value="0">Cover</option>`,
+    ...chapters.filter(c => starts[c.id] != null).map(c => `<option value="${starts[c.id]}">${itemName(c)}</option>`),
+    `<option value="${lastPages.length - 1}">Back cover</option>`,
+  ].join('');
+}
+
+// "Start on" lists the chapters and empty pages; numbering starts on the first page of the one picked.
+function fillStartOptions() {
+  const sel = $('#pnFrom');
+  if (!sel || !lastPages.length) return;
+  const pn = project.settings.pageNumbers;
+  sel.innerHTML = chapters.map(c => `<option value="${c.id}:0">${itemName(c)}</option>`).join('');
+
+  // An unset or vanished choice falls back to the first page after the cover.
+  const want = pn.from && sel.querySelector(`option[value="${pn.from}"]`) ? pn.from : sel.options[0]?.value;
+  if (want) sel.value = want;
+}
 let refreshTimer;
 const refreshSoon = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh(), 600); };
 document.fonts.addEventListener?.('loadingdone', () => refreshSoon());
@@ -213,6 +300,12 @@ addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft' || e.key === 'PageUp') bookView.prev();
 });
 
+// Rich-text tagline (HTML). Books saved before it was rich text have a plain `tagline`.
+const taglineHtml = () => {
+  const s = project.settings;
+  return s.taglineHtml ?? (s.tagline ? `<p>${esc(s.tagline)}</p>` : '');
+};
+
 // ---------- project view ----------
 function projectView() {
   crumbs();
@@ -220,32 +313,52 @@ function projectView() {
   view.innerHTML = `
     <div class="work">
       <aside class="side">
-        <div class="field">
-          <input class="in title" id="bookTitle" value="${esc(project.title)}" aria-label="Book title" maxlength="200">
-          <div class="row">
-            <select class="sel" id="bookStatus" aria-label="Status">${opts([['draft', 'Draft'], ['complete', 'Complete']], project.status)}</select>
-            <span id="saveState" style="font-size:12px;color:var(--muted)">All changes saved</span>
-          </div>
+        <div class="row">
+          <select class="sel" id="bookStatus" aria-label="Status">${opts([['draft', 'Draft'], ['complete', 'Complete']], project.status)}</select>
+          <span id="saveState" style="font-size:12px;color:var(--muted)">All changes saved</span>
         </div>
 
-        <div class="panel">
-          <div class="ph"><b>Chapters &amp; pages</b><div class="row">
+        <details class="panel" open>
+          <summary>Cover page</summary>
+          <div class="pb">
+            <div class="field"><span class="lbl">Title</span>
+              <input class="in" id="bookTitle" value="${esc(project.title)}" aria-label="Book title" maxlength="200"></div>
+            <div class="field"><span class="lbl">Tagline</span>
+              <div class="tag-ed"><div id="bookTagline" aria-label="Tagline"></div></div></div>
+            <div class="field"><span class="lbl">Author</span>
+              <input class="in" id="bookAuthor" value="${esc(s.author || '')}" placeholder="Author name" aria-label="Author name" maxlength="120"></div>
+          </div>
+        </details>
+
+        <details class="panel">
+          <summary>Back cover</summary>
+          <div class="pb">
+            <div class="field"><span class="lbl">Summary</span>
+              <div class="tag-ed back-ed"><div id="bookBack" aria-label="Back cover summary"></div></div></div>
+            <span style="font-size:12px;color:var(--muted)">The author name from the cover is shown at the bottom.</span>
+          </div>
+        </details>
+
+        <details class="panel" open>
+          <summary>Chapters &amp; pages</summary>
+          <div class="row ch-add">
             <button class="btn sm" id="addBlank" title="Add an empty page to the end">+ Empty page</button>
             <button class="btn sm primary" id="addChapter">+ Chapter</button>
-          </div></div>
+          </div>
           <ul class="chapters" id="chList"></ul>
-        </div>
+        </details>
 
         <details class="panel" open>
           <summary>Page numbers &amp; header</summary>
           <div class="pb setgrid">
             <span class="sub">Page numbers</span>
-            <span>Show</span><label class="chk"><input type="checkbox" data-pn="show" ${pn.show ? 'checked' : ''}> On every text page</label>
+            <span>Show</span><label class="chk"><input type="checkbox" data-pn="show" ${pn.show ? 'checked' : ''}> On text pages</label>
+            <span>Start on</span><select class="sel" data-pn="from" id="pnFrom" aria-label="Page where numbering starts"></select>
             <span>Position</span><select class="sel" data-pn="position">${opts([['footer', 'Footer'], ['header', 'Header']], pn.position)}</select>
             <span>Alignment</span><select class="sel" data-pn="align">${opts([['center', 'Center'], ['left', 'Left'], ['right', 'Right'], ['outer', 'Outside edge']], pn.align)}</select>
             <span>Style</span><select class="sel" data-pn="format">${opts(Object.entries(NUM_FORMAT_LABELS), pn.format)}</select>
             <span>Size</span><select class="sel" data-pn="size">${opts([7, 8, 9, 10, 11, 12].map(n => [n, n + ' pt']), pn.size)}</select>
-            <span>Start at</span><input class="in" type="number" min="1" max="9999" data-pn="start" value="${pn.start}">
+            <span>First number</span><input class="in" type="number" min="1" max="9999" data-pn="start" value="${pn.start}">
             <span class="sub">Running header (chapter name)</span>
             <span>Show</span><label class="chk"><input type="checkbox" data-hd="show" ${hd.show ? 'checked' : ''}> Chapter name at the top</label>
             <span>Opacity</span><input type="range" min="0.15" max="1" step="0.05" data-hd="opacity" value="${hd.opacity}" aria-label="Header opacity">
@@ -268,7 +381,33 @@ function projectView() {
       ${previewHtml()}
     </div>`;
 
-  $('#bookTitle').oninput = e => { project.title = e.target.value.trim() || 'Untitled book'; crumbs(); saveProject(); refreshSoon(); };
+  $('#bookTitle').oninput = e => { project.title = e.target.value.trim() || 'Untitled book'; crumbs(); $('#pvTitle').textContent = project.title; saveProject(); refreshSoon(); };
+  setupQuill();
+  const tagQuill = new Quill('#bookTagline', {
+    theme: 'snow',
+    placeholder: 'Add a tagline (optional)',
+    modules: { toolbar: [['bold', 'italic', 'underline', 'strike'], [{ color: [] }, { background: [] }], ['clean']] },
+  });
+  keepPastedFormatting(tagQuill);
+  tagQuill.clipboard.dangerouslyPasteHTML(taglineHtml(), 'silent');
+  tagQuill.on('text-change', () => {
+    s.taglineHtml = tagQuill.getText().trim() ? tagQuill.getSemanticHTML().replace(/&nbsp;/g, ' ') : '';
+    delete s.tagline;
+    $('#pvTagline').innerHTML = s.taglineHtml;
+    saveProject(); refreshSoon();
+  });
+  const backQuill = new Quill('#bookBack', {
+    theme: 'snow',
+    placeholder: 'What is this book about? A few lines for the back cover…',
+    modules: { toolbar: [['bold', 'italic', 'underline'], [{ header: [2, 3, false] }], [{ align: [false, 'left', 'center', 'right'] }], [{ color: [] }, { background: [] }], ['clean']] },
+  });
+  keepPastedFormatting(backQuill);
+  backQuill.clipboard.dangerouslyPasteHTML(s.backHtml || '', 'silent');
+  backQuill.on('text-change', () => {
+    s.backHtml = backQuill.getText().trim() ? backQuill.getSemanticHTML().replace(/&nbsp;/g, ' ') : '';
+    saveProject(); refreshSoon();
+  });
+  $('#bookAuthor').oninput = e => { s.author = e.target.value.trim(); saveProject(); refreshSoon(); };
   $('#bookStatus').onchange = e => { project.status = e.target.value; saveProject(); };
   view.querySelectorAll('[data-pn]').forEach(el => el.oninput = el.onchange = () => {
     const k = el.dataset.pn;
@@ -350,10 +489,10 @@ async function doExport(kind, btn) {
   const label = btn.textContent; btn.textContent = 'Preparing…';
   try {
     if (!lastPages.length) await refresh();
-    const { title, settings: s } = project, author = '';
+    const { title, settings: s } = project, tagline = taglineHtml();
     if (kind === 'pdf') exportPdf(title, lastPages, s);
-    if (kind === 'doc') exportDoc(title, author, lastFlow, s);
-    if (kind === 'docx') await exportDocx(title, author, lastFlow, s);
+    if (kind === 'doc') exportDoc(title, tagline, lastFlow, s);
+    if (kind === 'docx') await exportDocx(title, tagline, lastFlow, s);
   } catch (e) { failed('Download', e); }
   btn.disabled = false; btn.textContent = label;
 }
@@ -388,6 +527,20 @@ function setupQuill() {
     ...SPACINGS.map(z => `.ql-snow .ql-picker.ql-lineheight [data-value="${z}"]::before { content: "${z}×"; }`),
   ];
   const st = document.createElement('style'); st.textContent = css.join('\n'); document.head.append(st);
+}
+
+// Docs/Word paste every run as explicit black; drop it so text follows the
+// theme in the editor (pages are dark-on-paper anyway). Other colours stay.
+function keepPastedFormatting(quill) {
+  quill.clipboard.addMatcher(Node.ELEMENT_NODE, (node, delta) => {
+    for (const op of delta.ops) {
+      const a = op.attributes;
+      if (!a) continue;
+      if (/^(black|#000(000)?|rgb\(0, ?0, ?0\))$/i.test(a.color || '')) delete a.color;
+      if (/^(transparent|rgba\(0, ?0, ?0, ?0\))$/i.test(a.background || '')) delete a.background;
+    }
+    return delta;
+  });
 }
 
 // Inserted images are downscaled so a chapter row stays small enough to save quickly.
@@ -463,6 +616,7 @@ function chapterView(ch) {
       },
     },
   });
+  keepPastedFormatting(quill);
   // Toolbar tooltips
   const tips = { bold: 'Bold', italic: 'Italic', underline: 'Underline', strike: 'Strikethrough', blockquote: 'Quote', image: 'Insert image', clean: 'Clear formatting', color: 'Text colour', background: 'Highlight', align: 'Alignment (default: justify)', lineheight: 'Line spacing', header: 'Heading', font: 'Font', size: 'Font size' };
   for (const [k, t] of Object.entries(tips)) view.querySelectorAll(`.ql-${k}`).forEach(el => el.title = t);
