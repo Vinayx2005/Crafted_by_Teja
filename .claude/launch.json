@@ -37,6 +37,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "3005", "--directory", "apps/writer"],
       "port": 3005
+    },
+    {
+      "name": "games",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--workspace", "apps/games"],
+      "port": 3006
     }
   ]
 }

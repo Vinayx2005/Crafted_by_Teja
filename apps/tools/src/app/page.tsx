@@ -1,4 +1,4 @@
-import { ArrowRight, Dices, IndianRupee } from 'lucide-react';
+import { ArrowRight, Dices, Gamepad2, IndianRupee, Languages } from 'lucide-react';
 
 // Static list. Add new tools here as they ship — no CMS needed until
 // the roster grows past ~5 or the descriptions start needing edits
@@ -22,6 +22,24 @@ const TOOLS = [
     icon: Dices,
     live: true,
   },
+  {
+    href: 'https://writer.craftedbyteja.com',
+    title: 'Writer',
+    tagline: 'Type Indian languages in English letters.',
+    body: 'Write Telugu, Hindi and more phonetically — it converts to the script, fixes spellings and translates as you type.',
+    accent: 'from-emerald-500 to-teal-600',
+    icon: Languages,
+    live: true,
+  },
+  {
+    href: 'https://games.craftedbyteja.com',
+    title: 'Games',
+    tagline: 'Icebreaker games for founders.',
+    body: 'Guess the company, guess the founder, pitch taboo and more — quick browser games to play at meetups or on video calls.',
+    accent: 'from-amber-500 to-orange-600',
+    icon: Gamepad2,
+    live: true,
+  },
 ];
 
 export default function ToolsPage() {
@@ -31,7 +49,7 @@ export default function ToolsPage() {
         <p className="text-xs font-bold uppercase tracking-widest text-18-orange mb-4">Tools</p>
         <h1 className="text-4xl md:text-6xl font-black tracking-tight text-white leading-[1.05] mb-6">
           Small tools I built{' '}
-          <span className="text-18-orange italic">for myself.</span>
+          <span className="text-18-orange">for myself.</span>
         </h1>
         <p className="text-lg text-white/70 leading-relaxed max-w-2xl">
           Every one of these started as a private itch. If they help you too, great — they&apos;re free.
@@ -59,6 +77,9 @@ export default function ToolsPage() {
                         Live
                       </span>
                     )}
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">
+                      Free
+                    </span>
                   </div>
                   <p className="text-sm text-white/80 mt-1">{t.tagline}</p>
                   <p className="text-xs text-white/50 mt-2 leading-relaxed">{t.body}</p>

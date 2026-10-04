@@ -14,6 +14,7 @@
     "dev:tools": "npm run dev --workspace apps/tools",
     "dev:dilse": "npm run dev --workspace apps/dilse",
     "dev:cms":   "npm run dev --workspace apps/cms",
+    "dev:games": "npm run dev --workspace apps/games",
     "build:pft": "npm run build --workspace apps/pft",
     "lint:pft":  "npm run lint --workspace apps/pft"
   }
