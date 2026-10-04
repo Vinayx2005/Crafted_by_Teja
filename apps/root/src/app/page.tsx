@@ -3,6 +3,7 @@ import {
   ArrowRight, ArrowUpRight, ArrowDown, Laptop, PenLine, BookOpen, Send,
 } from 'lucide-react';
 import { dilse, DILSE_URL, DilseStory, DilseBook } from '@/lib/supabase';
+import { getAuthor, AUTHOR_URL } from '@/lib/author';
 
 // Dilse content is read on every request, so a newly published book or story
 // shows up here immediately.
@@ -182,10 +183,34 @@ async function getWriting(): Promise<WritingCard[]> {
 }
 
 export default async function HomePage() {
-  const writing = await getWriting();
+  const [writing, a] = await Promise.all([getWriting(), getAuthor()]);
+
+  // This page IS the author profile — the Person node lives here, and every
+  // byline across the blogs points at AUTHOR_URL (this URL). Credentials,
+  // email, location and the writing disclosure are carried in the markup
+  // only; they are deliberately not rendered anywhere on the page.
+  const person = {
+    '@context': 'https://schema.org',
+    '@type': 'Person',
+    name: a.name,
+    jobTitle: a.role || undefined,
+    description: a.bio || undefined,
+    image: a.image_url || undefined,
+    url: AUTHOR_URL,
+    email: a.email || undefined,
+    address: a.location || undefined,
+    disambiguatingDescription: a.credentials || undefined,
+    publishingPrinciples: a.disclosure
+      ? { '@type': 'CreativeWork', name: 'How these posts are written', text: a.disclosure }
+      : undefined,
+    // Every link pasted in the CMS becomes an identity signal here.
+    sameAs: a.links.map((l) => l.url),
+    knowsAbout: ['personal finance', 'entrepreneurship', 'software products', 'writing'],
+  };
 
   return (
     <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(person) }} />
       {/* ------------------------------------------------------------ hero */}
       <section className="border-b border-line">
         <div className="max-w-6xl mx-auto px-5 md:px-8 pt-12 md:pt-16 pb-16 grid md:grid-cols-2 gap-12 items-center">

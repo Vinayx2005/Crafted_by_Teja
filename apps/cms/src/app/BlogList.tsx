@@ -62,6 +62,7 @@ export default function BlogList() {
         <ul className="space-y-2">
           {filtered.map((p) => {
             const published = !!p.published_at;
+            const scheduled = published && new Date(p.published_at!).getTime() > Date.now();
             return (
               <li key={p.id}>
                 <Link
@@ -79,12 +80,14 @@ export default function BlogList() {
                     )}
                     <span
                       className={`text-[10px] font-bold uppercase tracking-wider rounded-full px-2 py-0.5 border ${
-                        published
+                        scheduled
+                          ? 'text-amber-300 bg-amber-300/10 border-amber-300/30'
+                          : published
                           ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
                           : 'text-white/50 bg-white/5 border-white/10'
                       }`}
                     >
-                      {published ? 'Published' : 'Draft'}
+                      {scheduled ? 'Scheduled' : published ? 'Published' : 'Draft'}
                     </span>
                   </div>
                   <p className="text-sm font-semibold text-white mt-1.5 truncate">

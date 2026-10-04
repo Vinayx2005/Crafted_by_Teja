@@ -102,6 +102,7 @@ export default function BlogEditor({ id }: Props) {
   if (loading) return <p className="text-white/50 text-sm">Loading…</p>;
 
   const published = !!row.published_at;
+  const scheduled = published && new Date(row.published_at!).getTime() > Date.now();
 
   return (
     <div className="max-w-5xl">
@@ -176,8 +177,8 @@ export default function BlogEditor({ id }: Props) {
             </Field>
             <Field label="Status">
               <div className="cms-input flex items-center">
-                <span className={`text-xs font-bold uppercase tracking-wider ${published ? 'text-emerald-400' : 'text-white/50'}`}>
-                  {published ? 'Published' : 'Draft'}
+                <span className={`text-xs font-bold uppercase tracking-wider ${scheduled ? 'text-amber-300' : published ? 'text-emerald-400' : 'text-white/50'}`}>
+                  {scheduled ? `Scheduled ${new Date(row.published_at!).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}` : published ? 'Published' : 'Draft'}
                 </span>
               </div>
             </Field>

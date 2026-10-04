@@ -9,7 +9,7 @@ import { useEffect, useState, ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase, AUTHOR_ALLOWLIST } from '@/lib/supabase';
-import { PenLine, BookOpen, Users, LogOut } from 'lucide-react';
+import { PenLine, Sparkles, BookOpen, Users, UserCircle, LogOut } from 'lucide-react';
 
 type SessionState =
   | { status: 'loading' }
@@ -127,7 +127,9 @@ function Shell({ email, children }: { email: string; children: ReactNode }) {
   const router = useRouter();
   const NAV = [
     { href: '/blog',    label: 'Blog',    icon: PenLine,  match: '/blog' },
+    { href: '/agent',   label: 'Blog agent', icon: Sparkles, match: '/agent' },
     { href: '/stories', label: 'Dilse',   icon: BookOpen, match: '/stories' },
+    { href: '/author',  label: 'Author profile', icon: UserCircle, match: '/author' },
     { href: '/users',   label: 'Users',   icon: Users,    match: '/users' },
   ];
   const isActive = (n: typeof NAV[0]) => pathname === n.href || pathname.startsWith(n.match + '/');

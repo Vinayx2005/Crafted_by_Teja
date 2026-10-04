@@ -37,3 +37,4 @@ body {
 .prose-crafted pre code { background: none; padding: 0; color: inherit; }
 .prose-crafted hr { border: 0; border-top: 1px solid #E4E1D8; margin: 2rem 0; }
 .prose-crafted img { border-radius: 10px; margin: 1.25rem 0; }
+.prose-crafted img + em { display: block; margin-top: -0.75rem; font-size: 0.75rem; font-style: normal; opacity: 0.6; } /* photo credit line */

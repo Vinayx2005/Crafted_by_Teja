@@ -11,13 +11,10 @@ const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 // after the session is verified.
 export const supabase = createClient(url, key);
 
-// Author allowlist — kept in sync with the RLS policy in
-// migrations/create_content_tables.sql. UI gate: hides CMS if the signed-in
-// email isn't listed. RLS is the real security gate; this just prevents
-// showing an empty CMS shell to strangers who somehow land on the URL.
-export const AUTHOR_ALLOWLIST = [
-  'vinayteja23@gmail.com',
-];
+// UI gate: hides CMS if the signed-in email isn't listed. RLS is the real
+// security gate; this just prevents showing an empty CMS shell to strangers
+// who somehow land on the URL.
+export { AUTHOR_ALLOWLIST } from './allowlist';
 
 export interface BlogPost {
   id: number;

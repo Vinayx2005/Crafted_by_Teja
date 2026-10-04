@@ -29,8 +29,9 @@
     {
       "name": "cms",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace", "apps/cms"],
-      "port": 3004
+      "runtimeArgs": ["exec", "--workspace", "apps/cms", "--", "next", "dev"],
+      "port": 3004,
+      "autoPort": true
     },
     {
       "name": "writer",
