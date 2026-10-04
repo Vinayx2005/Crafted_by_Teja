@@ -35,8 +35,8 @@
     },
     {
       "name": "writer",
-      "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "http.server", "3005", "--directory", "apps/writer"],
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--workspace", "apps/writer"],
       "port": 3005
     },
     {

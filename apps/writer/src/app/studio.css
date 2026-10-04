@@ -1,19 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Book Studio · Crafted by Teja</title>
-<meta name="description" content="Write books chapter by chapter with a live A5 preview, page numbers, running headers and Indian-language translation.">
-<script>document.documentElement.dataset.theme = (() => { try { return localStorage.getItem('writer_theme'); } catch {} })() || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link id="bookFonts" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css">
-<link rel="stylesheet" href="common.css">
-<link rel="stylesheet" href="book.css">
-<style>
+/* Book Studio page styles. */
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body { background: var(--bg); color: var(--text); font: 14px/1.45 Inter, system-ui, sans-serif; display: flex; flex-direction: column; }
@@ -177,7 +162,8 @@
   .pv-tagline p { margin: 0; text-align: center !important; }
   .pv-tagline:empty { display: none; }
   .stage { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 12px; }
-  .stage .flipbook { margin: auto; }
+  .stage .flipwrap { margin: auto; max-width: 100%; }
+  .mtabs { display: none; }
   .stage .page { background: #f7f1e6; overflow: hidden; }
   .stage .page .bp-inner { box-shadow: inset 0 0 30px rgba(0,0,0,.05); }
   .pv-nav { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
@@ -186,33 +172,41 @@
   .pv-busy.on { display: block; }
 
   @media (max-width: 900px) {
-    html, body { height: auto; }
-    .work { grid-template-columns: 1fr; }
-    .side { border-right: 0; border-bottom: 1px solid var(--border); overflow: visible; }
-    .side.editor { height: 80vh; }
-    .preview { height: 80vh; }
-    .top { padding: 10px 16px; }
+    /* one pane at a time, switched with the tabs; each pane scrolls on its own */
+    .work { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .preview, .side { min-width: 0; }
+    .work[data-pane="side"] .preview, .work[data-pane="preview"] .side { display: none; }
+    .mtabs { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
+    .mtabs button { flex: 1; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); font-size: 13px; cursor: pointer; }
+    .mtabs button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+    .side { border-right: 0; padding: 14px 14px 40px; }
+    /* editor: the whole pane scrolls so the writing area gets the screen;
+       toolbar sticks to the top, save bar to the bottom */
+    .side.editor { padding: 0; display: block; overflow-y: auto; }
+    .ed-wrap { display: block; }
+    .side.editor .ql-toolbar.ql-snow { position: sticky; top: 0; z-index: 3; }
+    .side.editor .ql-container.ql-snow { overflow: visible; min-height: 65vh; }
+    .ed-foot { position: sticky; bottom: 0; z-index: 3; background: var(--panel); }
+    .pv-title, .pv-tagline { display: none; } /* the cover already shows them */
+    .pv-bar { flex-wrap: nowrap; overflow-x: auto; padding: 8px 12px; scrollbar-width: none; }
+    .pv-bar::-webkit-scrollbar { display: none; }
+    .pv-bar label { flex: none; }
+    .stage { padding: 8px; }
+    .ql-editor { padding: 16px 16px 60px; }
+    .ql-editor.ql-blank::before { left: 16px; }
+    /* header: one compact row */
+    .top { flex-wrap: nowrap; padding: 8px 12px; gap: 8px; }
+    .brand { font-size: 16px; }
+    .crumbs { flex: 1; overflow: hidden; }
+    .crumbs > :not(b) { display: none; } /* just the current book / chapter name */
+    .crumbs b { max-width: none; }
+    .tr-bar { flex-wrap: nowrap; }
+    .tr-bar .chk { flex: none; }
+    .tr-bar .sel { min-width: 0; flex: 1; }
+    .top .spacer { display: none; }
+    .top .btn { height: 30px; padding: 0 9px; font-size: 12px; }
     .home { padding: 20px 16px 40px; }
     .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
     .card .del { opacity: 1; }
     #who { display: none; }
   }
-</style>
-</head>
-<body>
-<header class="top">
-  <a class="brand" href="#/">Crafted by <span>Teja</span></a>
-  <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
-  <span class="spacer"></span>
-  <a class="btn" href="translator.html">Translator</a>
-  <button class="btn" data-theme-toggle aria-label="Toggle theme"></button>
-  <span id="who"></span>
-  <button class="btn" id="logoutBtn">Log out</button>
-</header>
-<main id="view"><div class="loading">Loading…</div></main>
-
-<script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.js"></script>
-<script type="module" src="studio.js"></script>
-</body>
-</html>

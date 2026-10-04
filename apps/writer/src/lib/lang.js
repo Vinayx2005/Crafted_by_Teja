@@ -1,11 +1,11 @@
-// Translation for the book preview — the same two Google endpoints the
-// translator page uses, applied to the text nodes of a chapter's HTML so
+// Translation for the book preview — Google's translate and input-tools
+// endpoints, applied to the text nodes of a chapter's HTML so
 // formatting survives.
 //
 //   from = 'en'   English prose → translated into `to`.
 //   from = other  Phonetic typing (e.g. Tanglish): each English-letter word is
-//                 converted to native script (the user's saved word choices
-//                 from the translator win), then translated if `to` differs.
+//                 converted to native script (the user's saved word choices,
+//                 kept from the old translator, win), then translated if `to` differs.
 
 // [code, name, Google Input Tools code or null]
 export const LANGS = [
@@ -70,7 +70,7 @@ async function translateText(text, from, to, words) {
 }
 
 // Returns translated HTML, or the original if nothing needs doing.
-// `words` = the user's saved choices from the translator ({ "te:nenu": "నేను" }).
+// `words` = the user's saved word choices ({ "te:nenu": "నేను" }).
 export async function translateHtml(html, from, to, words = {}) {
   if (!html || (from === to && from === 'en')) return html;
   const tpl = document.createElement('template');

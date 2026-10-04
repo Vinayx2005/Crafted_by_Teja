@@ -2,19 +2,30 @@
 //   #/                  your books
 //   #/p/<id>            a book: chapters, page setup, preview, downloads
 //   #/p/<id>/c/<id>     a chapter in the editor, preview alongside
-import { sb, user, store, signOut, notify } from './common.js';
-import { FONTS, FONT_CSS, withDefaults, applyVars, paginate, BookView, NUM_FORMAT_LABELS, exportPdf, exportDoc, exportDocx } from './book.js';
-import { LANGS, SOURCES, ROMAN, translateHtml } from './lang.js';
-import { play } from './sound.js';
+import Quill from 'quill';
+import { sb, init, store, signOut, notify } from './common';
+import { FONTS, FONT_CSS, withDefaults, applyVars, paginate, BookView, NUM_FORMAT_LABELS, exportPdf, exportDoc, exportDocx } from './book';
+import { LANGS, SOURCES, ROMAN, translateHtml } from './lang';
+import { play } from './sound';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const view = $('#view');
 const nowIso = () => new Date().toISOString();
+let view, user;
 
-$('#bookFonts').href = FONT_CSS;
-$('#who').textContent = user.email || '';
-$('#logoutBtn').onclick = async () => { await flushAll(); signOut(); };
+// Entry point, called once by src/app/Studio.tsx after the shell has rendered.
+let started = false;
+export async function start() {
+  if (started) return;
+  started = true;
+  user = await init();
+  view = $('#view');
+  $('#bookFonts').href = FONT_CSS;
+  $('#who').textContent = user.email || '';
+  $('#logoutBtn').onclick = async () => { await flushAll(); signOut(); };
+  addEventListener('hashchange', route);
+  route();
+}
 
 function ago(iso) {
   const s = (Date.now() - new Date(iso)) / 1000;
@@ -87,6 +98,7 @@ async function loadProject(id) {
 let bookView = null;
 async function route() {
   await flushAll();
+  bookView?.destroy();
   bookView = null;
   const m = location.hash.match(/^#\/p\/([\w-]+)(?:\/c\/([\w-]+))?/);
   if (!m) return home();
@@ -98,7 +110,6 @@ async function route() {
     chapterView(ch);
   } else projectView();
 }
-addEventListener('hashchange', route);
 
 function crumbs(ch) {
   $('#crumbs').innerHTML = project
@@ -175,6 +186,19 @@ function askAuthor() {
     dlg.remove();
   }));
 }
+
+// Phones show one pane at a time; this switch (hidden on wide screens) flips between them.
+const paneTabs = first => `
+  <nav class="mtabs" aria-label="Switch view">
+    <button class="on" data-pane="side">${first}</button>
+    <button data-pane="preview">Preview</button>
+  </nav>`;
+document.addEventListener('click', e => {
+  const b = e.target.closest('.mtabs button'); if (!b) return;
+  const work = b.closest('.work');
+  work.dataset.pane = b.dataset.pane;
+  work.querySelectorAll('.mtabs button').forEach(x => x.classList.toggle('on', x === b));
+});
 
 // ---------- the book preview (shared by project + chapter views) ----------
 const opts = (list, cur) => list.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${esc(l)}</option>`).join('');
@@ -311,7 +335,8 @@ function projectView() {
   crumbs();
   const s = project.settings, pn = s.pageNumbers, hd = s.header;
   view.innerHTML = `
-    <div class="work">
+    <div class="work" data-pane="side">
+      ${paneTabs('Book setup')}
       <aside class="side">
         <div class="row">
           <select class="sel" id="bookStatus" aria-label="Status">${opts([['draft', 'Draft'], ['complete', 'Complete']], project.status)}</select>
@@ -570,7 +595,8 @@ function chapterView(ch) {
   const s = project.settings, tr = s.translate;
   const langOpts = (list, cur, roman) => opts(list.map(([c, n]) => [c, roman && c !== 'en' ? `${ROMAN[c] || n} (${n} in English letters)` : n]), cur);
   view.innerHTML = `
-    <div class="work">
+    <div class="work" data-pane="side">
+      ${paneTabs('Write')}
       <aside class="side editor">
         <div class="ed-head">
           <div class="row" style="justify-content:space-between">
@@ -650,5 +676,3 @@ function chapterView(ch) {
   mountPreview(ch.id);
   if (!ch.html) quill.focus();
 }
-
-route();

@@ -1,15 +1,16 @@
 // Shared by every page of the writer app: Supabase client, sign-in gate,
 // the per-user prefs blob (writer.prefs) and the light/dark theme.
 //
-// Importing this module waits until someone is signed in, so a page can
-// simply `await import('./common.js')` and then use `user`.
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+// A page calls `await init()` once; it resolves with the signed-in user
+// (showing the sign-in screen first if needed) after prefs and theme load.
+import { createClient } from '@supabase/supabase-js';
 
 // Same Supabase project as the other apps; the anon key is public by design,
-// RLS on every writer.* table limits rows to their owner.
+// RLS on every writer.* table limits rows to their owner. Falls back to the
+// project's public values so a deploy without the env vars still works.
 export const sb = createClient(
-  'https://nqgflcoqfrqzelzduuhs.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xZ2ZsY29xZnJxemVsemR1dWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNjU0MzcsImV4cCI6MjA5OTg0MTQzN30.Ud7l_jg_uNMrf_IROo6SAByPY6E1m3O0obcXlL4O9hk',
+  process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://nqgflcoqfrqzelzduuhs.supabase.co',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xZ2ZsY29xZnJxemVsemR1dWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNjU0MzcsImV4cCI6MjA5OTg0MTQzN30.Ud7l_jg_uNMrf_IROo6SAByPY6E1m3O0obcXlL4O9hk',
   { db: { schema: 'writer' } }
 );
 
@@ -32,8 +33,8 @@ async function signIn() {
   wrap.id = 'auth'; wrap.className = 'open';
   wrap.innerHTML = `
     <form class="auth-card" id="authForm">
-      <h2>Crafted by <span>Teja</span></h2>
-      <p>Sign in to write your books and keep your saved words on every device.</p>
+      <h2>Writers <span>Book Studio</span></h2>
+      <p>Sign in to write your books and pick up where you left off on any device.</p>
       <button type="button" class="abtn google" id="googleBtn">${GOOGLE_SVG} Continue with Google</button>
       <div class="or">or</div>
       <input type="email" id="authEmail" placeholder="Email" autocomplete="email" required>
@@ -71,31 +72,33 @@ async function signIn() {
   return new Promise(res => sb.auth.onAuthStateChange((_, s) => { if (s) { wrap.remove(); res(s.user); } }));
 }
 
-export const user = await signIn();
+let user = null, prefs = {}, loadErr = null, saveTimer = null, ready = null;
 
 // ---------- prefs: one jsonb blob per user in writer.prefs ----------
 const LEGACY_KEYS = ['tr_src', 'te_tgt', 'te_ac', 'te_fs', 'te_hist', 'te_words'];
-const { data: row, error: loadErr } = await sb.from('prefs').select('data').eq('user_id', user.id).maybeSingle();
-if (loadErr) { console.error('Could not load saved data', loadErr); setTimeout(() => notify('Could not load your saved settings, so changes will not be saved'), 0); }
-let prefs = row?.data;
-if (!prefs) {
-  // First sign-in: carry over anything this browser saved before accounts existed.
-  prefs = {};
-  for (const k of LEGACY_KEYS) { try { const v = localStorage.getItem(k); if (v) prefs[k] = JSON.parse(v); } catch {} }
+async function loadPrefs() {
+  const { data: row, error } = await sb.from('prefs').select('data').eq('user_id', user.id).maybeSingle();
+  loadErr = error;
+  if (loadErr) { console.error('Could not load saved data', loadErr); setTimeout(() => notify('Could not load your saved settings, so changes will not be saved'), 0); }
+  prefs = row?.data;
+  if (!prefs) {
+    // First sign-in: carry over anything this browser saved before accounts existed.
+    prefs = {};
+    for (const k of LEGACY_KEYS) { try { const v = localStorage.getItem(k); if (v) prefs[k] = JSON.parse(v); } catch {} }
+  }
+  if (!row && !loadErr) savePrefs(); // creates the row so the account shows as a Writer user in the CMS
 }
-let saveTimer = null;
+
 function savePrefs() {
   clearTimeout(saveTimer); saveTimer = null;
   if (loadErr) return Promise.resolve(); // never overwrite data we failed to read
   return sb.from('prefs').upsert({ user_id: user.id, data: prefs, updated_at: new Date().toISOString() })
     .then(({ error }) => { if (error) { console.error('Save failed', error); notify('Could not save — check your connection'); } });
 }
-if (!row && !loadErr) savePrefs(); // creates the row so the account shows as a Writer user in the CMS
 export const store = {
   get(k, d) { return k in prefs ? prefs[k] : d; },
   set(k, v) { prefs[k] = v; clearTimeout(saveTimer); saveTimer = setTimeout(savePrefs, 600); }
 };
-addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && saveTimer) savePrefs(); });
 
 export async function signOut() {
   if (saveTimer) await savePrefs();
@@ -110,9 +113,19 @@ const applyTheme = t => {
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem('writer_theme', t); } catch {}
 };
-applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
-document.addEventListener('click', e => {
-  if (!e.target.closest('[data-theme-toggle]')) return;
-  const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
-  applyTheme(t); store.set('theme', t);
-});
+
+export function init() {
+  ready ||= (async () => {
+    user = await signIn();
+    await loadPrefs();
+    addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && saveTimer) savePrefs(); });
+    applyTheme(store.get('theme', document.documentElement.dataset.theme || 'dark'));
+    document.addEventListener('click', e => {
+      if (!e.target.closest('[data-theme-toggle]')) return;
+      const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+      applyTheme(t); store.set('theme', t);
+    });
+    return user;
+  })();
+  return ready;
+}

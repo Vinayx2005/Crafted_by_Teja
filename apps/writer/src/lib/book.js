@@ -1,4 +1,5 @@
 // Book engine: settings, A5 pagination, the page-flip preview and exports.
+import { PageFlip } from 'page-flip';
 
 export const FONTS = [
   'Times New Roman', 'Georgia', 'EB Garamond', 'Libre Baskerville', 'Lora', 'Merriweather',
@@ -184,25 +185,35 @@ export class BookView {
   constructor(stage, onFlip) {
     this.stage = stage; this.onFlip = onFlip; this.pages = []; this.s = DEFAULTS; this.flip = null; this.at = 0;
     let t;
-    new ResizeObserver(() => { clearTimeout(t); t = setTimeout(() => this.draw(), 150); }).observe(stage);
+    this.ro = new ResizeObserver(() => { clearTimeout(t); t = setTimeout(() => this.draw(), 150); });
+    this.ro.observe(stage);
   }
+  // Stop listening to resizes and remove the page-flip instance (it watches the window).
+  destroy() { this.ro.disconnect(); this.flip?.destroy(); this.flip = null; this.pages = []; }
   show(pages, s, at = this.flip ? this.flip.getCurrentPageIndex() : this.at) {
     this.pages = pages; this.s = s;
     this.draw(Math.max(0, Math.min(at, pages.length - 1)));
   }
   draw(at = this.flip ? this.flip.getCurrentPageIndex() : this.at) {
     const { stage, pages, s } = this;
-    if (!pages.length) return;
+    if (!pages.length || !stage.isConnected) return;
     const W = stage.clientWidth - 24, H = stage.clientHeight - 24;
     if (W < 50 || H < 50) return;
     const two = Math.min(W / (2 * PAGE_W), H / PAGE_H), one = Math.min(W / PAGE_W, H / PAGE_H);
-    const scale = two >= 0.42 ? two : one;
+    const spread = two >= 0.42; // two pages side by side, else one page (phones)
+    const scale = spread ? two : one;
     this.at = at;
     if (this.flip) { this.flip.destroy(); this.flip = null; }
+    // PageFlip sizes itself from its parent's width, so give it a parent exactly
+    // one page (or one spread) wide — otherwise it grows past the stage on phones.
+    const wrap = document.createElement('div');
+    wrap.className = 'flipwrap';
+    wrap.style.width = Math.floor(PAGE_W * scale) * (spread ? 2 : 1) + 'px';
     const book = document.createElement('div');
     book.className = 'flipbook';
-    stage.querySelector('.flipbook')?.remove();
-    stage.append(book);
+    wrap.append(book);
+    stage.querySelector('.flipwrap')?.remove();
+    stage.append(wrap);
     const from = numberStart(pages, s);
     const nodes = pages.map((p, i) => {
       const page = document.createElement('div');
@@ -217,7 +228,7 @@ export class BookView {
       page.append(inner);
       return page;
     });
-    this.flip = new St.PageFlip(book, {
+    this.flip = new PageFlip(book, {
       width: Math.floor(PAGE_W * scale), height: Math.floor(PAGE_H * scale), size: 'fixed',
       showCover: true, usePortrait: true, maxShadowOpacity: 0.35, flippingTime: 700,
       mobileScrollSupport: false, startPage: this.at,
@@ -263,7 +274,7 @@ export function exportPdf(title, pages, s) {
   const d = frame.contentDocument;
   d.open();
   d.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
-    <link rel="stylesheet" href="${new URL('book.css', location.href)}"><link rel="stylesheet" href="${FONT_CSS}">
+    <link rel="stylesheet" href="${new URL('/book.css', location.origin)}"><link rel="stylesheet" href="${FONT_CSS}">
     <style>@page { size: 148mm 210mm; margin: 0 } html, body { margin: 0 } .bp-inner { break-after: page; -webkit-print-color-adjust: exact; print-color-adjust: exact; }</style>
     </head><body></body></html>`);
   d.close();
@@ -301,7 +312,7 @@ p { margin: 0 0 ${s.paraSpacing}pt; text-align: justify; } img { max-width: 100%
 // DOCX: built natively with the `docx` library — A5, one section per chapter,
 // chapter name as running header, page numbers per the book's settings.
 export async function exportDocx(title, tagline, chapters, s) {
-  const D = await import('https://cdn.jsdelivr.net/npm/docx@9.5.1/+esm');
+  const D = await import('docx');
   const mm = D.convertMillimetersToTwip;
   const font = s.font, half = pt => Math.round(pt * 2);
   const ALIGN = { left: D.AlignmentType.LEFT, center: D.AlignmentType.CENTER, right: D.AlignmentType.RIGHT, justify: D.AlignmentType.JUSTIFIED };
