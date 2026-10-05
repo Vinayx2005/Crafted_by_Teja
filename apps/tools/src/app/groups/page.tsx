@@ -17,7 +17,9 @@ async function search({ q, topic, city, kind }: Params): Promise<Group[] | null>
     order: 'last_works.desc.nullslast,created_at.desc',
     limit: '60',
   });
-  if (q?.trim()) qs.set('fts', `wfts(english).${q.trim().slice(0, 100)}`);
+  // Every word as a prefix, so "start" finds "startup" and "found" finds "founders".
+  const words = q?.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 8);
+  if (words?.length) qs.set('fts', `fts(english).${words.map((w) => `${w}:*`).join(' & ')}`);
   if (topic) qs.set('topic', `eq.${topic}`);
   if (city) qs.set('city', `eq.${city}`);
   if (kind === 'group' || kind === 'channel') qs.set('kind', `eq.${kind}`);

@@ -52,7 +52,8 @@ function collect(text, { title, titleIsName, context, sourceUrl, source }) {
     const name = nameFor(text, link) || (titleIsName ? title : null);
     if (!name || name.length < 3) continue;
     const line = text.slice(text.lastIndexOf('\n', link.index) + 1).split('\n')[0];
-    const about = line.replace(/<[^>]+>|https?:\/\/\S+|\+?\d[\d\s-]{8,}\d/g, '') // no phone numbers.replace(/\s+/g, ' ').trim().slice(0, 300) || null;
+    // Tags, URLs and phone numbers out.
+    const about = line.replace(/<[^>]+>|https?:\/\/\S+|\+?\d[\d\s-]{8,}\d/g, '').replace(/\s+/g, ' ').trim().slice(0, 300) || null;
     const all = `${name} ${about ?? ''} ${title ?? ''} ${context ?? ''}`;
     const topic = classify(all);
     if (!topic || isBlocked(all) || !isEnglish(`${name} ${about ?? ''}`)) continue;
