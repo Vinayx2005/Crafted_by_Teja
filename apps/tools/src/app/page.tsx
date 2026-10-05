@@ -1,4 +1,4 @@
-import { ArrowRight, BookOpen, Dices, Gamepad2, IndianRupee } from 'lucide-react';
+import { ArrowRight, BookOpen, Dices, Gamepad2, IndianRupee, MessageCircle } from 'lucide-react';
 
 // Static list. Add new tools here as they ship — no CMS needed until
 // the roster grows past ~5 or the descriptions start needing edits
@@ -20,6 +20,15 @@ const TOOLS = [
     body: 'Paste a list of names and spin for a random winner. Shuffle, sort, remove winners as you go — nothing leaves your browser.',
     accent: 'from-indigo-500 to-violet-600',
     icon: Dices,
+    live: true,
+  },
+  {
+    href: '/groups',
+    title: 'WhatsApp Group Finder',
+    tagline: 'Find a WhatsApp group for anything.',
+    body: 'Search groups and channels by topic and city: startups, tech, books, jobs, fitness and more. Add your own in seconds.',
+    accent: 'from-green-500 to-emerald-600',
+    icon: MessageCircle,
     live: true,
   },
   {

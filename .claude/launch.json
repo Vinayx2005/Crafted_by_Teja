@@ -17,8 +17,9 @@
     {
       "name": "tools",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--workspace", "apps/tools"],
-      "port": 3002
+      "runtimeArgs": ["exec", "--workspace", "apps/tools", "--", "next", "dev"],
+      "port": 3002,
+      "autoPort": true
     },
     {
       "name": "dilse",
