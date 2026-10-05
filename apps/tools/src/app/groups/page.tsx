@@ -26,7 +26,7 @@ async function search({ q, topic, city, kind }: Params): Promise<Group[] | null>
   try {
     return await (await db(`wa_groups_live?${qs}`)).json();
   } catch (e) {
-    console.error(e);
+    console.error('groups search failed:', e);
     return null;
   }
 }
