@@ -56,26 +56,34 @@ const has = (text, word) =>
 
 export const isBlocked = (text) => BLOCK.some((w) => has(text.toLowerCase(), w));
 
-// English-only for now: any non-Latin letter, or a common word from another
-// Latin-script language, rules it out.
-const FOREIGN = ['grupo', 'grupos', 'comunidade', 'comunidad', 'para', 'del', 'los', 'las', 'unete', 'únete', 'participe', 'gruppo', 'unisciti', 'della', 'und', 'der', 'die', 'das', 'het', 'een', 'yang', 'dan', 'untuk', 'gabung', 'groupe', 'rejoindre', 'pour', 'avec', 'nao', 'não', 'você', 'est'];
+// English-only for now: any letter outside plain a–z (accents included), or a
+// common word from another Latin-script language, rules it out.
+const FOREIGN = ['grupo', 'grupos', 'comunidade', 'comunidad', 'para', 'del', 'los', 'las', 'unete', 'participe', 'gruppo', 'unisciti', 'della', 'und', 'der', 'die', 'das', 'zur', 'von', 'mit', 'het', 'een', 'yang', 'dan', 'untuk', 'gabung', 'kami', 'groupe', 'rejoindre', 'pour', 'avec', 'nao', 'est'];
 export const isEnglish = (text) =>
-  !/(?![\p{Script=Latin}])\p{L}/u.test(text) && !FOREIGN.some((w) => has(text.toLowerCase(), w));
+  !/(?![A-Za-z])\p{L}/u.test(text) && !FOREIGN.some((w) => has(text.toLowerCase(), w));
 
+const GENERIC = /\b(join|joining|follow|our|the|my|this|a|an|here|now|link|links|click|official|updates?|whatsapp|group|groups|channel|community|chat|invite|us|on|to|via|please|and|or|for|at|is|setup|guide|contact|support|help)\b/gi;
+
+// Crawled text that isn't a usable group name: code, leftover markup, an image
+// caption ("!logo"), a social-links footer, or nothing left once filler words go.
+export const badName = (name) =>
+  name.length > 100 ||
+  /^!|[=;{}$<\\]|\/\/|\b(const|let|var|href|function|github|instagram|linkedin|telegram|discord|twitter|img|logo|badge|png|svg)\b/i.test(name) ||
+  name.replace(GENERIC, '').replace(/[^a-z0-9]/gi, '').length < 4;
+
+// Up to 3 matching topics, strongest first; empty when nothing matches.
 export function classify(text) {
   const t = text.toLowerCase();
-  let best = null, bestScore = 0;
-  for (const topic of TOPICS) {
-    const score = topic.words.filter((w) => has(t, w)).length;
-    if (score > bestScore) { best = topic.key; bestScore = score; }
-  }
-  return best;
+  return TOPICS.map((topic) => [topic.key, topic.words.filter((w) => has(t, w)).length])
+    .filter(([, score]) => score > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([key]) => key);
 }
 
-export function findCity(text) {
+export function findCities(text) {
   const t = text.toLowerCase();
-  for (const [city, words] of Object.entries(CITY_WORDS)) if (words.some((w) => has(t, w))) return city;
-  return null;
+  return Object.entries(CITY_WORDS).filter(([, words]) => words.some((w) => has(t, w))).map(([city]) => city);
 }
 
 // Every invite / channel link pattern people paste, reduced to one canonical URL.

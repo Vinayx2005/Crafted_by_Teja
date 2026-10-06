@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { CITIES, TOPICS, db } from '@/lib/wa.mjs';
+import { CITIES, TOPICS, TOPIC_KEYS, db } from '@/lib/wa.mjs';
 import { GroupCard, SubmitForm, type Group } from './client';
 
 export const metadata: Metadata = {
@@ -13,15 +13,16 @@ type Params = { q?: string; topic?: string; city?: string; kind?: string };
 
 async function search({ q, topic, city, kind }: Params): Promise<Group[] | null> {
   const qs = new URLSearchParams({
-    select: 'id,url,kind,name,about,topic,city,works,last_works',
+    select: 'id,url,kind,name,about,topics,cities,works,last_works',
     order: 'last_works.desc.nullslast,created_at.desc',
     limit: '60',
   });
   // Every word as a prefix, so "start" finds "startup" and "found" finds "founders".
   const words = q?.toLowerCase().match(/[a-z0-9]+/g)?.slice(0, 8);
   if (words?.length) qs.set('fts', `fts(english).${words.map((w) => `${w}:*`).join(' & ')}`);
-  if (topic) qs.set('topic', `eq.${topic}`);
-  if (city) qs.set('city', `eq.${city}`);
+  if (topic && TOPIC_KEYS.includes(topic)) qs.set('topics', `cs.{${topic}}`);
+  // Online groups are open to everyone, so they match whatever city is picked.
+  if (city && CITIES.includes(city)) qs.set('cities', `ov.{"${city}","Online"}`);
   if (kind === 'group' || kind === 'channel') qs.set('kind', `eq.${kind}`);
   try {
     return await (await db(`wa_groups_live?${qs}`)).json();
@@ -35,7 +36,7 @@ const field = 'bg-18-surface border border-18-border rounded-xl px-3 py-2.5 text
 
 export default async function GroupsPage({ searchParams }: { searchParams: Params }) {
   const groups = await search(searchParams);
-  const topicLabel = Object.fromEntries(TOPICS.map((t) => [t.key, t.label]));
+  const topicLabels: Record<string, string> = { ...Object.fromEntries(TOPICS.map((t) => [t.key, t.label])), other: 'Other' };
 
   return (
     <div className="max-w-3xl mx-auto px-4 md:px-6 py-12 md:py-16">
@@ -72,7 +73,7 @@ export default async function GroupsPage({ searchParams }: { searchParams: Param
         <p className="text-white/60 text-sm">No groups match that yet. Know one? Add it below.</p>
       ) : (
         <div className="space-y-3">
-          {groups.map((g) => <GroupCard key={g.id} group={g} topicLabel={topicLabel[g.topic] ?? 'Other'} />)}
+          {groups.map((g) => <GroupCard key={g.id} group={g} topicLabels={topicLabels} />)}
         </div>
       )}
 
@@ -82,6 +83,12 @@ export default async function GroupsPage({ searchParams }: { searchParams: Param
         Listings are found automatically or added by visitors. They aren&apos;t reviewed, so be careful: never share OTPs or pay anyone you meet in a group.
         Joining a group shows your phone number to its members. Admin of a listed group and want it gone? Reset the invite link in WhatsApp;
         the old one drops off once visitors mark it dead.
+      </p>
+      <p className="text-xs text-white/40 mt-3 leading-relaxed">
+        <strong className="text-white/60">Disclaimer:</strong> craftedbyteja.com doesn&apos;t run, check or control any of these groups, and isn&apos;t
+        responsible for anything that happens in them. The links are collected from public websites or added by visitors. If a group looks
+        suspicious, report it to{' '}
+        <a href="mailto:hello@craftedbyteja.com" className="text-18-orange hover:underline">hello@craftedbyteja.com</a>.
       </p>
     </div>
   );

@@ -8,18 +8,16 @@
 //   node apps/tools/scripts/wa-crawl.mjs           crawl + insert
 //   node apps/tools/scripts/wa-crawl.mjs --dry     crawl + print, no DB
 
-import { TOPICS, classify, findCity, findLinks, isBlocked, isEnglish, db } from '../src/lib/wa.mjs';
+import { CITIES, TOPICS, badName, classify, findCities, findLinks, isBlocked, isEnglish, db } from '../src/lib/wa.mjs';
 
 const DRY = process.argv.includes('--dry');
-const MAX_INSERTS = 500;
+const MAX_INSERTS = 2000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const decode = (s) =>
   s.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
     .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-
-const GENERIC = /\b(join|joining|our|the|my|this|a|an|here|link|links|click|whatsapp|group|groups|channel|community|chat|invite|us|on|to|via|please|and|or|for|at|is)\b/gi;
 
 // Best guess at a link's name: markdown/HTML link text, else the rest of its line.
 function nameFor(text, link) {
@@ -34,9 +32,7 @@ function nameFor(text, link) {
       .replace(/<[^>]+>|[*_`#>|\[\]()]|\+?\d[\d\s-]{8,}\d/g, '')
       .replace(/^[\s\-–•:"']+|[\s\-–•:"']+$/g, '')
       .trim();
-    // A line of code, leftover HTML, or a "GitHub · Telegram · WhatsApp" footer — not a name.
-    if (/[=;{}$<]|\/\/|\b(const|let|var|href|function|github|instagram|linkedin|telegram|discord|twitter)\b/i.test(name)) continue;
-    if (name.replace(GENERIC, '').replace(/[^a-z0-9]/gi, '').length >= 4 && name.length <= 100) return name;
+    if (!badName(name)) return name;
   }
   return null;
 }
@@ -55,15 +51,15 @@ function collect(text, { title, titleIsName, context, sourceUrl, source }) {
     // Tags, URLs and phone numbers out.
     const about = line.replace(/<[^>]+>|https?:\/\/\S+|\+?\d[\d\s-]{8,}\d/g, '').replace(/\s+/g, ' ').trim().slice(0, 300) || null;
     const all = `${name} ${about ?? ''} ${title ?? ''} ${context ?? ''}`;
-    const topic = classify(all);
-    if (!topic || isBlocked(all) || !isEnglish(`${name} ${about ?? ''}`)) continue;
+    const topics = classify(all);
+    if (!topics.length || isBlocked(all) || !isEnglish(`${name} ${about ?? ''}`)) continue;
     found.set(link.url, {
       url: link.url,
       kind: link.kind,
       name: name.slice(0, 100),
       about: about && about !== name ? about : null,
-      topic,
-      city: findCity(all),
+      topics,
+      cities: findCities(all),
       source,
       source_url: sourceUrl,
     });
@@ -106,21 +102,25 @@ async function hackerNews(q) {
   }
 }
 
-// A different keyword per topic each day, so every run turns up new READMEs.
+// Each day: the next 3 keywords of every topic plus every city, in READMEs
+// one day and GitHub Pages HTML the next, so runs keep turning up new pages.
 const day = Math.floor(Date.now() / 864e5);
+const ext = day % 2 ? 'html' : 'md';
+const terms = TOPICS.flatMap((t) => [0, 1, 2].map((i) => t.words[(day * 3 + i) % t.words.length]))
+  .concat(CITIES.filter((c) => c !== 'Online' && c !== 'Outside India').map((c) => c.split(' ')[0].toLowerCase()));
 for (const host of ['chat.whatsapp.com', 'whatsapp.com/channel']) {
   await hackerNews(host);
   if (!process.env.GITHUB_TOKEN) continue;
-  for (const topic of TOPICS) {
-    await github(`"${host}" ${topic.words[day % topic.words.length]} extension:md`);
-    await sleep(7000); // code search allows 10 requests a minute
+  for (const term of new Set(terms)) {
+    await github(`"${host}" ${term} extension:${ext}`);
+    await sleep(6500); // code search allows 10 requests a minute
   }
 }
 
 const rows = [...found.values()].slice(0, MAX_INSERTS);
 console.log(`found ${found.size} links, inserting ${rows.length}`);
 if (DRY) {
-  for (const r of rows) console.log(`${r.topic.padEnd(10)} ${(r.city ?? '').padEnd(10)} ${r.name} — ${r.url}`);
+  for (const r of rows) console.log(`${r.topics.join(',').padEnd(20)} ${r.cities.join(',').padEnd(12)} ${r.name} — ${r.url}`);
 } else if (rows.length) {
   // Existing URLs are skipped, so a link someone submitted keeps their name and topic.
   await db('wa_groups?on_conflict=url', {

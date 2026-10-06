@@ -31,12 +31,14 @@ export async function POST(req: Request) {
     const link = canonical(body.link ?? '');
     const name = String(body.name ?? '').trim();
     const about = String(body.about ?? '').trim();
-    const city = String(body.city ?? '');
+    const list = (v: unknown) => [...new Set((Array.isArray(v) ? v : [v]).filter(Boolean).map(String))];
+    const topics = list(body.topics);
+    const cities = list(body.cities);
     if (!link) return fail('Paste one WhatsApp group or channel invite link.');
     if (name.length < 3 || name.length > 100) return fail('Name should be 3–100 characters.');
     if (about.length > 500) return fail('Description should be under 500 characters.');
-    if (!TOPIC_KEYS.includes(body.topic)) return fail('Pick a topic.');
-    if (city && !CITIES.includes(city)) return fail('Pick a city from the list.');
+    if (!topics.length || topics.length > 3 || !topics.every((t) => TOPIC_KEYS.includes(t))) return fail('Pick 1 to 3 topics.');
+    if (cities.length > 5 || !cities.every((c) => CITIES.includes(c))) return fail('Pick up to 5 cities from the list.');
     if (isBlocked(`${name} ${about}`)) return fail('This looks like a kind of group we don’t list (trading tips, earning, betting, adult and similar).');
 
     const since = new Date(Date.now() - 864e5).toISOString();
@@ -53,7 +55,7 @@ export async function POST(req: Request) {
       headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
       body: JSON.stringify({
         url: link.url, kind: link.kind, name, about: about || null,
-        topic: body.topic, city: city || null, source: 'submit', submitter: who,
+        topics, cities, source: 'submit', submitter: who,
       }),
     });
     if (!(await res.json()).length) return fail('That link is already listed.', 409);
