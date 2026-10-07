@@ -68,7 +68,7 @@ const GENERIC = /\b(join|joining|follow|our|the|my|this|a|an|here|now|link|links
 // caption ("!logo"), a social-links footer, or nothing left once filler words go.
 export const badName = (name) =>
   name.length > 100 ||
-  /^!|[=;{}$<\\]|\/\/|\b(const|let|var|href|function|github|instagram|linkedin|telegram|discord|twitter|img|logo|badge|png|svg)\b/i.test(name) ||
+  /^!|[=;{}$<\\]|\/\/|[a-z][A-Z][a-z]+ \d{1,2}, \d{4}|\b(const|let|var|href|function|github|instagram|linkedin|telegram|discord|twitter|img|logo|badge|png|svg)\b/i.test(name) ||
   name.replace(GENERIC, '').replace(/[^a-z0-9]/gi, '').length < 4;
 
 // Up to 3 matching topics, strongest first; empty when nothing matches.

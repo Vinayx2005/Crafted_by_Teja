@@ -58,7 +58,10 @@ export async function POST(req: Request) {
         topics, cities, source: 'submit', submitter: who,
       }),
     });
-    if (!(await res.json()).length) return fail('That link is already listed.', 409);
+    if (!(await res.json()).length) {
+      const removed = await (await db(`wa_removed?select=url&url=eq.${encodeURIComponent(link.url)}`)).json();
+      return fail(removed.length ? 'That link was removed after visitors reported it as dead or spam.' : 'That link is already listed.', 409);
+    }
     return NextResponse.json({ ok: true });
   }
 

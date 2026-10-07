@@ -80,14 +80,10 @@ export default async function GroupsPage({ searchParams }: { searchParams: Param
       <SubmitForm topics={TOPICS.map((t) => ({ key: t.key, label: t.label }))} cities={CITIES} />
 
       <p className="text-xs text-white/40 mt-10 leading-relaxed">
-        Listings are found automatically or added by visitors. They aren&apos;t reviewed, so be careful: never share OTPs or pay anyone you meet in a group.
-        Joining a group shows your phone number to its members. Admin of a listed group and want it gone? Reset the invite link in WhatsApp;
-        the old one drops off once visitors mark it dead.
-      </p>
-      <p className="text-xs text-white/40 mt-3 leading-relaxed">
-        <strong className="text-white/60">Disclaimer:</strong> craftedbyteja.com doesn&apos;t run, check or control any of these groups, and isn&apos;t
-        responsible for anything that happens in them. The links are collected from public websites or added by visitors. If a group looks
-        suspicious, report it to{' '}
+        <strong className="text-white/60">Disclaimer:</strong> The links here are collected from public websites or added by visitors, and
+        aren&apos;t reviewed. craftedbyteja.com doesn&apos;t run, check or control any of these groups, and isn&apos;t responsible for anything
+        that happens in them. Be careful: never share OTPs or pay anyone you meet in a group, and remember that joining a group shows your phone
+        number to its members. If a group looks suspicious, report it to{' '}
         <a href="mailto:hello@craftedbyteja.com" className="text-18-orange hover:underline">hello@craftedbyteja.com</a>.
       </p>
     </div>

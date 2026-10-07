@@ -30,6 +30,7 @@ function nameFor(text, link) {
     const name = candidate
       .replace(/https?:\/\/\S+|\S*whatsapp\.com\/\S+/gi, '')
       .replace(/<[^>]+>|[*_`#>|\[\]()]|\+?\d[\d\s-]{8,}\d/g, '')
+      .replace(/\s+/g, ' ')
       .replace(/^[\s\-–•:"']+|[\s\-–•:"']+$/g, '')
       .trim();
     if (!badName(name)) return name;
@@ -67,15 +68,18 @@ function collect(text, { title, titleIsName, context, sourceUrl, source }) {
 }
 
 // READMEs and docs only: source files are mostly bots with hard-coded links.
-async function github(q) {
-  const res = await fetch(`https://api.github.com/search/code?per_page=100&q=${encodeURIComponent(q)}`, {
+async function github(q, page = 1) {
+  // A dropped connection skips this page instead of losing the whole run.
+  const res = await fetch(`https://api.github.com/search/code?per_page=100&page=${page}&q=${encodeURIComponent(q)}`, {
     headers: {
       Accept: 'application/vnd.github.text-match+json',
       Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
       'User-Agent': 'craftedbyteja-wa-crawl',
     },
-  });
-  if (!res.ok) return console.warn(`github "${q}": ${res.status}`);
+    signal: AbortSignal.timeout(30000),
+  }).catch((e) => console.warn(`github "${q}" p${page}: ${e.message}`));
+  if (!res) return;
+  if (!res.ok) return console.warn(`github "${q}" p${page}: ${res.status}`);
   for (const item of (await res.json()).items ?? []) {
     const repo = item.repository;
     for (const m of item.text_matches ?? []) {
@@ -90,7 +94,10 @@ async function github(q) {
 }
 
 async function hackerNews(q) {
-  const res = await fetch(`https://hn.algolia.com/api/v1/search_by_date?hitsPerPage=200&query=${encodeURIComponent(q)}`);
+  const res = await fetch(`https://hn.algolia.com/api/v1/search_by_date?hitsPerPage=200&query=${encodeURIComponent(q)}`, {
+    signal: AbortSignal.timeout(30000),
+  }).catch((e) => console.warn(`hn "${q}": ${e.message}`));
+  if (!res) return;
   if (!res.ok) return console.warn(`hn "${q}": ${res.status}`);
   for (const hit of (await res.json()).hits) {
     collect((hit.comment_text ?? hit.story_text ?? '').replace(/<p>/g, '\n'), {
@@ -102,17 +109,29 @@ async function hackerNews(q) {
   }
 }
 
-// Each day: the next 3 keywords of every topic plus every city, in READMEs
-// one day and GitHub Pages HTML the next, so runs keep turning up new pages.
-const day = Math.floor(Date.now() / 864e5);
+// Each day: the next 3 keywords of every topic plus every city (first page
+// each), and 3 broad searches read 10 pages deep (GitHub's max). READMEs one
+// day, GitHub Pages HTML the next, so runs keep turning up new pages.
+// WA_DAY=<n> replays another day's searches, for catching up by hand.
+const day = +process.env.WA_DAY || Math.floor(Date.now() / 864e5);
 const ext = day % 2 ? 'html' : 'md';
+const HOSTS = ['chat.whatsapp.com', 'whatsapp.com/channel'];
+const BROAD = ['', 'community', 'group', 'join', 'india', 'club', 'meetup', 'members', 'learn', 'network', 'official', 'free'];
 const terms = TOPICS.flatMap((t) => [0, 1, 2].map((i) => t.words[(day * 3 + i) % t.words.length]))
   .concat(CITIES.filter((c) => c !== 'Online' && c !== 'Outside India').map((c) => c.split(' ')[0].toLowerCase()));
-for (const host of ['chat.whatsapp.com', 'whatsapp.com/channel']) {
-  await hackerNews(host);
-  if (!process.env.GITHUB_TOKEN) continue;
-  for (const term of new Set(terms)) {
-    await github(`"${host}" ${term} extension:${ext}`);
+const searches = [
+  ...HOSTS.flatMap((host) => [...new Set(terms)].map((term) => [`"${host}" ${term} extension:${ext}`, 1])),
+  ...[0, 1, 2].flatMap((i) => {
+    const n = day * 3 + i;
+    const q = `"${HOSTS[n % 2]}" ${BROAD[Math.floor(n / 2) % BROAD.length]} extension:${ext}`.replace('  ', ' ');
+    return Array.from({ length: 10 }, (_, p) => [q, p + 1]);
+  }),
+];
+
+for (const host of HOSTS) await hackerNews(host);
+if (process.env.GITHUB_TOKEN) {
+  for (const [q, page] of searches) {
+    await github(q, page);
     await sleep(6500); // code search allows 10 requests a minute
   }
 }
@@ -123,9 +142,19 @@ if (DRY) {
   for (const r of rows) console.log(`${r.topics.join(',').padEnd(20)} ${r.cities.join(',').padEnd(12)} ${r.name} — ${r.url}`);
 } else if (rows.length) {
   // Existing URLs are skipped, so a link someone submitted keeps their name and topic.
-  await db('wa_groups?on_conflict=url', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
-    body: JSON.stringify(rows),
-  });
+  // Three tries: losing a 20-minute crawl to one dropped connection hurts.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await db('wa_groups?on_conflict=url', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
+        body: JSON.stringify(rows),
+      });
+      break;
+    } catch (e) {
+      if (attempt === 3 || /^db 4/.test(e.message)) throw e; // a 4xx won't fix itself
+      console.warn(`save failed (${e.message}), retrying`);
+      await sleep(10000);
+    }
+  }
 }
