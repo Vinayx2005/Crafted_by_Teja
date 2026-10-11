@@ -5,9 +5,10 @@ import { supabase } from '@/lib/supabase';
 
 interface Props {
   label?: string; // e.g. "Continue with Google" or "Sign up with Google"
+  redirectTo?: string; // where Google sends the user back; defaults to /dashboard
 }
 
-export default function GoogleAuthButton({ label = 'Continue with Google' }: Props) {
+export default function GoogleAuthButton({ label = 'Continue with Google', redirectTo }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,9 +21,10 @@ export default function GoogleAuthButton({ label = 'Continue with Google' }: Pro
         options: {
           // Land on the dashboard after Google redirects back.
           redirectTo:
-            typeof window !== 'undefined'
+            redirectTo ??
+            (typeof window !== 'undefined'
               ? `${window.location.origin}/dashboard`
-              : undefined,
+              : undefined),
         },
       });
       if (authError) throw authError;
