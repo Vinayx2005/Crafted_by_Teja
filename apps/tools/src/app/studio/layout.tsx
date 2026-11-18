@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { Suspense } from 'react';
 import Shell from './shell';
 
-// A private team tool: keep it out of search results.
+// A private team tool (Content Studio): keep it out of search results.
 export const metadata: Metadata = {
   title: 'Content Studio · Crafted by Teja',
   robots: { index: false, follow: false },
