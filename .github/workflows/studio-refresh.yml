@@ -1,0 +1,29 @@
+# Daily refresh of every YouTube competitor in the Content Studio
+# (see apps/tools/scripts/studio-refresh.mjs).
+# Repo secrets needed: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+# (already used by the WhatsApp crawl) and STUDIO_CRON_SECRET, a long random
+# string that must also be set, identically, on the tools project in Vercel.
+name: Studio competitor refresh
+
+on:
+  schedule:
+    - cron: '30 22 * * *' # 04:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node apps/tools/scripts/studio-refresh.mjs
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STUDIO_CRON_SECRET: ${{ secrets.STUDIO_CRON_SECRET }}

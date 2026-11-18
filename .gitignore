@@ -54,3 +54,6 @@ build/
 
 .vercel
 .env*
+
+# Local database backups taken before migrations (contain real data)
+/backups/

@@ -21,6 +21,11 @@ module.exports = {
         '18-white':     '#FFFFFF', // primary text on dark
         '18-dark-text': '#B0B0B0', // muted text on dark
         '18-border':    '#2A2A2A', // subtle border on dark
+        // Content Studio (light theme)
+        'st-ink':       '#222222', // primary text
+        'st-mute':      '#777777', // secondary text
+        'st-line':      '#EEEEEE', // borders
+        'st-surface':   '#FAFAFA', // subtle panels
         // Legacy — kept so nothing crashes
         'dark-text':    '#B0B0B0',
         orange:         '#F37335',
