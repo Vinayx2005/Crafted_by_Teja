@@ -375,7 +375,7 @@ export default function Work({ page, view, onOpened }: { page: Page; view: 'crea
             {busy === 'script' && (
               <div className="mt-5 rounded-xl bg-st-surface px-5 py-4 flex items-center gap-3" aria-live="polite">
                 <Spinner />
-                <p className="text-sm">{stage} <span className="text-st-mute">This takes up to a minute.</span></p>
+                <p className="text-sm">{stage} <span className="text-st-mute">This takes up to a minute: keep this screen open.</span></p>
               </div>
             )}
 
