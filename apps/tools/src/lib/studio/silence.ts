@@ -15,7 +15,13 @@ export function levels(samples: Float32Array, rate: number): number[] {
     for (let j = i; j < end; j++) sum += samples[j] * samples[j];
     rms.push(Math.sqrt(sum / (end - i)));
   }
-  const peak = Math.max(...rms, 1e-9);
+  return toLevels(rms);
+}
+
+/** Loudness (RMS) readings to 0-100 levels. A loop, not Math.max(...rms): that breaks on long videos (too many arguments). */
+export function toLevels(rms: number[]): number[] {
+  let peak = 1e-9;
+  for (const r of rms) if (r > peak) peak = r;
   return rms.map((r) => Math.max(0, Math.min(100, 100 + (20 * Math.log10(Math.max(r, 1e-9) / peak)) * (100 / 60))));
 }
 

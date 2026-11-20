@@ -10,6 +10,10 @@ import { createPortal } from 'react-dom';
 import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, Save, Scissors, Undo2, Upload, ZoomIn, ZoomOut } from 'lucide-react';
 import { putProject, saveVideo, type Rec } from '@/lib/studio/silence-projects';
 import { flattenMp4 } from '@/lib/studio/mp4-flatten';
+import { streamLevels } from '@/lib/studio/audio-levels';
+
+// Files read whole (not MP4 or MOV) must stay under this, or the browser runs out of memory.
+const WHOLE_FILE_LIMIT = 400 * 1048576;
 import { clock, cutSpans, editedTime, findSilences, hopTarget, keepSpans, levels, parseProject, segments, type Override, type Project, type Span } from '@/lib/studio/silence';
 import { btn, btnGhost, card, ErrorNote, Spinner } from '../ui';
 
@@ -29,7 +33,8 @@ function hop(v: HTMLVideoElement, cuts: Span[]) {
 // "2 min 5 sec", for times people read.
 const span = (s: number) => (s < 60 ? `${Math.ceil(s)} sec` : `${Math.floor(Math.round(s) / 60)} min ${Math.round(s) % 60} sec`);
 
-const MAX_ZOOM = 20;
+// Zoom goes up to about 60 page pixels per second of video (at least 20 times), so long videos can be cut finely.
+const zoomLimit = (total: number, viewW: number) => Math.max(20, Math.ceil((total * 60) / Math.max(1, viewW)));
 const STEPS = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 
 function Slider({ label, value, min, max, step, unit, onChange }: { label: string; value: number; min: number; max: number; step: number; unit: string; onChange: (n: number) => void }) {
@@ -55,6 +60,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
   const [url, setUrl] = useState('');
   const [vol, setVol] = useState<number[] | null>(() => (rec.vol ? Array.from(rec.vol) : null));
   const [busy, setBusy] = useState(false);
+  const [listened, setListened] = useState(0); // % of the sound read so far
   const [error, setError] = useState('');
   const [threshold, setThreshold] = useState(rec.threshold);
   const [minSilence, setMinSilence] = useState(rec.minSilence);
@@ -265,15 +271,26 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     if (!f || busy) return;
     setBusy(true);
     setError('');
+    setListened(0);
+    let shown = 0;
     try {
-      // 8 kHz mono is plenty for finding pauses, and keeps long videos light on memory.
-      const ctx = new OfflineAudioContext(1, 1, 8000);
-      const audio = await ctx.decodeAudioData(await f.arrayBuffer());
-      const mono = new Float32Array(audio.length);
-      for (let c = 0; c < audio.numberOfChannels; c++) audio.getChannelData(c).forEach((s, i) => (mono[i] += s / audio.numberOfChannels));
-      setVol(levels(mono, audio.sampleRate));
-    } catch {
-      setError('Could not read the sound of this video. It may be too large for this browser, or it has no audio. Try a shorter clip.');
+      // MP4 and MOV: read the sound piece by piece, so any length works.
+      setVol(await streamLevels(f, (x) => { const pct = Math.floor(x * 100); if (pct !== shown) setListened((shown = pct)); }));
+    } catch (e) {
+      // Other files (WebM, for example) are read whole, which only works while they are not too big.
+      if (f.size > WHOLE_FILE_LIMIT) setError(`${e instanceof Error ? e.message : 'This video could not be read.'} Videos over ${WHOLE_FILE_LIMIT / 1048576} MB need to be MP4 or MOV.`);
+      else {
+        try {
+          // 8 kHz mono is plenty for finding pauses.
+          const ctx = new OfflineAudioContext(1, 1, 8000);
+          const audio = await ctx.decodeAudioData(await f.arrayBuffer());
+          const mono = new Float32Array(audio.length);
+          for (let c = 0; c < audio.numberOfChannels; c++) audio.getChannelData(c).forEach((s, i) => (mono[i] += s / audio.numberOfChannels));
+          setVol(levels(mono, audio.sampleRate));
+        } catch {
+          setError('Could not read the sound of this video. It may have no audio, or a format this browser cannot read.');
+        }
+      }
     }
     setBusy(false);
   }
@@ -299,6 +316,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
   }, [file, vol, threshold, minSilence, buffer, edits]);
   useEffect(() => () => persistRef.current(), []);
 
+  const maxZoom = zoomLimit(total, viewW);
   const innerW = Math.round(viewW * zoom);
   const perSec = total ? innerW / total : 0;
 
@@ -320,24 +338,44 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     setSelected(t);
   }
 
-  // Waveform (the shading and the cut lines are drawn as page elements on top).
-  useEffect(() => {
+  // Waveform: only the part on screen is drawn, so it stays sharp at any zoom on a long video.
+  // (The shading and the cut lines are page elements on top.)
+  const draw = () => {
     const c = canvas.current;
-    if (!c || !vol) return;
-    const w = Math.min(innerW * devicePixelRatio, 16000);
-    const h = c.clientHeight * devicePixelRatio;
-    c.width = w;
-    c.height = h;
+    const el = scroller.current;
+    if (!c || !el || !vol) return;
+    const x0 = el.scrollLeft;
+    const w = el.clientWidth;
+    c.style.left = `${x0}px`;
+    c.style.width = `${w}px`;
+    const dpr = devicePixelRatio;
+    const W = Math.round(w * dpr);
+    const H = c.clientHeight * dpr;
+    c.width = W;
+    c.height = H;
     const g = c.getContext('2d')!;
     g.fillStyle = '#F37335';
-    for (let x = 0; x < w; x++) {
-      const from = Math.floor((x / w) * vol.length);
+    const per = vol.length / innerW; // readings per page pixel
+    for (let x = 0; x < W; x++) {
+      const from = Math.floor((x0 + x / dpr) * per);
+      const to = Math.max(Math.floor((x0 + (x + 1) / dpr) * per), from + 1);
       let m = 0;
-      for (let i = from; i < Math.max(Math.floor(((x + 1) / w) * vol.length), from + 1); i++) m = Math.max(m, vol[i] ?? 0);
-      const bar = (m / 100) * h;
-      g.fillRect(x, (h - bar) / 2, 1, Math.max(1, bar));
+      for (let i = from; i < to && i < vol.length; i++) if (vol[i] > m) m = vol[i];
+      const bar = (m / 100) * H;
+      g.fillRect(x, (H - bar) / 2, 1, Math.max(1, bar));
     }
-  }, [vol, innerW]);
+  };
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+  useEffect(() => { draw(); }, [vol, innerW, viewW]);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let raf = 0;
+    const on = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => drawRef.current()); };
+    el.addEventListener('scroll', on, { passive: true });
+    return () => el.removeEventListener('scroll', on);
+  }, []);
 
   // While the video plays: move the playhead, show the edited time, and jump over hidden parts.
   useEffect(() => {
@@ -369,7 +407,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     if (!el) return;
     const x = anchorX ?? el.clientWidth / 2;
     const at = (el.scrollLeft + x) / innerW;
-    const z = Math.max(1, Math.min(MAX_ZOOM, zoom * f));
+    const z = Math.max(1, Math.min(maxZoom, zoom * f));
     setZoom(z);
     requestAnimationFrame(() => { el.scrollLeft = at * viewW * z - x; });
   }
@@ -467,7 +505,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
               <input type="file" accept="video/*,audio/*" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
             </label>
             <button onClick={() => start()} disabled={!file || busy} className={`${btn} !min-h-[36px] !px-3`}>
-              {busy ? <Spinner /> : <Scissors size={14} aria-hidden />} {busy ? 'Listening…' : vol ? 'Restart' : 'Start'}
+              {busy ? <Spinner /> : <Scissors size={14} aria-hidden />} {busy ? `Listening… ${listened}%` : vol ? 'Restart' : 'Start'}
             </button>
             <label className={`${btnGhost} !min-h-[36px] !px-3 cursor-pointer`}>
               <FolderOpen size={14} aria-hidden /> Open project
@@ -505,8 +543,8 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
           <button onClick={() => choose(false)} disabled={!current || !current.hidden} className={tool(!current)} title="Keep the selected part in the preview (open eye)"><Eye size={15} aria-hidden /> Keep</button>
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => zoomBy(1 / 1.5)} disabled={!vol || zoom <= 1} className={tool(!vol)} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} aria-hidden /></button>
-            <input type="range" min={1} max={MAX_ZOOM} step={0.5} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} onPointerUp={(e) => e.currentTarget.blur()} disabled={!vol} aria-label="Zoom" className="w-28 accent-[#F37335]" />
-            <button onClick={() => zoomBy(1.5)} disabled={!vol || zoom >= MAX_ZOOM} className={tool(!vol)} aria-label="Zoom in" title="Zoom in"><ZoomIn size={15} aria-hidden /></button>
+            <input type="range" min={1} max={maxZoom} step={0.5} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} onPointerUp={(e) => e.currentTarget.blur()} disabled={!vol} aria-label="Zoom" className="w-28 accent-[#F37335]" />
+            <button onClick={() => zoomBy(1.5)} disabled={!vol || zoom >= maxZoom} className={tool(!vol)} aria-label="Zoom in" title="Zoom in"><ZoomIn size={15} aria-hidden /></button>
             <button onClick={download} disabled={!vol} className={btnGhost}><Download size={15} aria-hidden /> Cut list</button>
           </div>
         </div>
@@ -523,7 +561,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
               <div className="absolute inset-x-0 top-0 h-5 border-b border-st-line text-[10px] text-st-mute pointer-events-none">
                 {ticks.map((t) => <span key={t} className="absolute top-1 pl-1 border-l border-st-line" style={{ left: t * perSec }}>{clock(t)}</span>)}
               </div>
-              <canvas ref={canvas} className="absolute left-0 top-5 h-[calc(100%-1.25rem)] pointer-events-none" style={{ width: innerW }} />
+              <canvas ref={canvas} className="absolute left-0 top-5 h-[calc(100%-1.25rem)] pointer-events-none" />
               {segs.map((s) => {
                 const wide = (s.end - s.start) * perSec >= 26;
                 return (

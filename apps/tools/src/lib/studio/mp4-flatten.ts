@@ -3,7 +3,7 @@
 // MP4: one index (moov) first, then all the media (mdat). The picture and sound bytes are copied as they
 // are, nothing is re-encoded. Only the small index boxes are read into memory, so long videos are fine.
 
-type Box = { type: string; start: number; size: number; hdr: number };
+export type Box = { type: string; start: number; size: number; hdr: number };
 type Sample = { size: number; dur: number; cto: number; sync: boolean };
 type Track = { id: number; scale: number; trak: Box; samples: Sample[]; trex: { dur: number; size: number; flags: number } };
 type Chunk = { track: Track; count: number; at: number; bytes: number };
@@ -11,9 +11,9 @@ type Chunk = { track: Track; count: number; at: number; bytes: number };
 const td = new TextDecoder();
 const te = new TextEncoder();
 
-const view = async (b: Blob, from: number, to: number) => new DataView(await b.slice(from, to).arrayBuffer());
+export const view = async (b: Blob, from: number, to: number) => new DataView(await b.slice(from, to).arrayBuffer());
 
-function readHeader(d: DataView, p: number, end: number): Box | null {
+export function readHeader(d: DataView, p: number, end: number): Box | null {
   if (p + 8 > end) return null;
   let size = d.getUint32(p);
   let hdr = 8;
@@ -27,7 +27,7 @@ function readHeader(d: DataView, p: number, end: number): Box | null {
 }
 
 /** Boxes directly inside `parent` (positions are within the DataView `d`). */
-function kids(d: DataView, parent: Box): Box[] {
+export function kids(d: DataView, parent: Box): Box[] {
   const out: Box[] = [];
   for (let p = parent.start + parent.hdr, end = parent.start + parent.size; ; ) {
     const b = readHeader(d, p, end);
@@ -36,8 +36,21 @@ function kids(d: DataView, parent: Box): Box[] {
     p += b.size;
   }
 }
-const kid = (d: DataView, parent: Box, type: string) => kids(d, parent).find((k) => k.type === type);
-const body = (b: Box) => b.start + b.hdr; // where a box's content starts
+export const kid = (d: DataView, parent: Box, type: string) => kids(d, parent).find((k) => k.type === type);
+export const body = (b: Box) => b.start + b.hdr; // where a box's content starts
+
+/** The top-level boxes of a file, read header by header (the big media box is never loaded). */
+export async function topBoxes(src: Blob): Promise<Box[]> {
+  const top: Box[] = [];
+  for (let p = 0; p + 8 <= src.size; ) {
+    const d = await view(src, p, Math.min(p + 16, src.size));
+    const b = readHeader(d, 0, src.size - p);
+    if (!b) break;
+    top.push({ ...b, start: p });
+    p += b.size;
+  }
+  return top;
+}
 const version = (d: DataView, b: Box) => d.getUint8(body(b));
 const copy = (d: DataView, b: Box) => new Uint8Array(d.buffer.slice(d.byteOffset + b.start, d.byteOffset + b.start + b.size));
 
@@ -90,14 +103,7 @@ function setDuration(b: Uint8Array, v0At: number, v1At: number, value: number) {
 /** Returns a normal (seekable) MP4. Files that are not fragmented are returned unchanged. */
 export async function flattenMp4(src: Blob): Promise<Blob> {
   // Top level: ftyp, moov, then moof + mdat pairs.
-  const top: Box[] = [];
-  for (let p = 0; p + 8 <= src.size; ) {
-    const d = await view(src, p, Math.min(p + 16, src.size));
-    const b = readHeader(d, 0, src.size - p);
-    if (!b) break;
-    top.push({ ...b, start: p });
-    p += b.size;
-  }
+  const top = await topBoxes(src);
   const moovAt = top.find((b) => b.type === 'moov');
   if (!moovAt || !top.some((b) => b.type === 'moof')) return src;
 
