@@ -15,9 +15,10 @@ import { btnGhost, card, ErrorNote, Spinner, useConfirm } from '../ui';
 import Competition from './competition';
 import { Direction, PlaybookBox, usePlaybook } from './learnings';
 import Knowledge from './knowledge';
+import Silence from './silence-home';
 import Work from './work';
 
-const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', research: 'Research', settings: 'Brand Settings' };
+const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', silence: 'Silence remover', research: 'Research', settings: 'Brand Settings' };
 
 export default function BrandScreen() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +27,7 @@ export default function BrandScreen() {
   const raw = params.get('section') ?? 'create';
   const section = raw in TITLES ? raw : 'create';
   const [page, setPage] = useState<Page | null>(null);
+  const [actions, setActions] = useState<HTMLElement | null>(null); // header spot for the Silence remover buttons
   const [research, setResearch] = useState<'competitors' | 'works'>('competitors');
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -76,9 +78,12 @@ export default function BrandScreen() {
   return (
     <div>
       {dialog}
-      <header className="mb-6">
-        <p className="text-xs text-st-mute">{page.name} <span aria-hidden>/</span> {TITLES[section]}</p>
-        <h1 className="text-xl font-semibold tracking-tight mt-1">{TITLES[section]}</h1>
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs text-st-mute">{page.name} <span aria-hidden>/</span> {TITLES[section]}</p>
+          <h1 className="text-xl font-semibold tracking-tight mt-1">{TITLES[section]}</h1>
+        </div>
+        <div ref={setActions} className={section === 'silence' ? 'flex flex-wrap items-center justify-end gap-2' : 'hidden'} />
       </header>
       {section !== 'create' && section !== 'library' && <div className="mb-4"><ErrorNote text={error} /></div>}
 
@@ -87,6 +92,8 @@ export default function BrandScreen() {
       </div>
 
       <div hidden={section !== 'knowledge'}><Knowledge page={page} /></div>
+
+      <div hidden={section !== 'silence'}><Silence actions={actions} /></div>
 
       <div hidden={section !== 'research'} className="space-y-5">
         <div role="tablist" aria-label="Research" className="inline-flex rounded-lg bg-st-surface p-1">

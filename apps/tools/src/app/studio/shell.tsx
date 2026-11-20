@@ -7,7 +7,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { BookOpen, Check, ChevronDown, FolderOpen, Home, LogOut, Menu, Palette, Search, Sparkles, X } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, FolderOpen, Home, LogOut, Menu, Palette, Scissors, Search, Sparkles, X } from 'lucide-react';
 import { api, configured, errorText, supabase } from '@/lib/studio/client';
 import { btn, btnGhost, card, ErrorNote, field, label, menuItem, Popover, Spinner } from './ui';
 
@@ -93,6 +93,7 @@ const NAV = [
   { key: 'create', label: 'Create', icon: Sparkles },
   { key: 'library', label: 'Library', icon: FolderOpen },
   { key: 'knowledge', label: 'Knowledge', icon: BookOpen },
+  { key: 'silence', label: 'Silence remover', icon: Scissors },
   { key: 'research', label: 'Research', icon: Search },
   { key: 'settings', label: 'Brand Settings', icon: Palette },
 ] as const;
