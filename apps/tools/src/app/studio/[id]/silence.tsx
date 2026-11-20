@@ -7,7 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, Save, Scissors, Undo2, Upload, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, Crop, Download, Eye, EyeOff, Film, FolderOpen, Save, Scissors, Undo2, Upload, ZoomIn, ZoomOut } from 'lucide-react';
 import { putProject, saveVideo, type Rec } from '@/lib/studio/silence-projects';
 import { flattenMp4 } from '@/lib/studio/mp4-flatten';
 import { streamLevels } from '@/lib/studio/audio-levels';
@@ -24,10 +24,10 @@ const recorderExt = () => (recorderMime()?.startsWith('video/mp4') ? 'mp4' : 'we
 
 // Jumps over a removed part. Never while a jump is still running: setting the time again restarts the
 // seek, and a video that is asked again every frame never gets anywhere.
-function hop(v: HTMLVideoElement, cuts: Span[]) {
+function hop(v: HTMLVideoElement, cuts: Span[], off: number) {
   if (v.seeking) return;
-  const to = hopTarget(cuts, v.currentTime);
-  if (to != null) v.currentTime = to;
+  const to = hopTarget(cuts, v.currentTime - off);
+  if (to != null) v.currentTime = to + off;
 }
 
 // "2 min 5 sec", for times people read.
@@ -55,7 +55,10 @@ const NO_EDITS: Edits = { splits: [], overrides: [] };
 
 // One project open in the editor. `actions` is the spot in the page header (same line as the title)
 // where the buttons are shown. Edits are saved to the project a second after every change.
-export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | null; rec: Rec; blob: Blob | null; onBack: () => void }) {
+export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: HTMLElement | null; rec: Rec; blob: Blob | null; onBack: () => void; onChangePart: () => void }) {
+  // Everything here is measured from the start of the chosen part ("part time"); `off` turns it into video time.
+  const off = rec.range?.start ?? 0;
+  const partLen = rec.range ? rec.range.end - rec.range.start : 0;
   const [file, setFile] = useState<File | null>(() => (blob ? new File([blob], rec.fileName, { type: blob.type }) : null));
   const [url, setUrl] = useState('');
   const [vol, setVol] = useState<number[] | null>(() => (rec.vol ? Array.from(rec.vol) : null));
@@ -206,11 +209,13 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     v.muted = true;
     try {
       v.pause();
-      if (Math.abs(v.currentTime - keep[0].start) > 0.01) await new Promise<void>((r) => { v.addEventListener('seeked', () => r(), { once: true }); v.currentTime = keep[0].start; });
+      if (Math.abs(v.currentTime - off - keep[0].start) > 0.01) await new Promise<void>((r) => { v.addEventListener('seeked', () => r(), { once: true }); v.currentTime = keep[0].start + off; });
       stream = v.captureStream!();
       // High bitrate, so the recording keeps as much of the picture as a re-encode can: 1.5 times the
       // original file's, and never below 8 Mbps.
-      const bits = Math.min(40e6, Math.max(8e6, file ? ((file.size * 8) / Math.max(1, total)) * 1.5 : 0));
+      // The original bitrate is the whole file over the whole video's length (not the chosen part's).
+      const fullLength = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Math.max(1, total);
+      const bits = Math.min(40e6, Math.max(8e6, file ? ((file.size * 8) / fullLength) * 1.5 : 0));
       rec = new MediaRecorder(stream, { ...(recorderMime() ? { mimeType: recorderMime() } : {}), videoBitsPerSecond: bits, audioBitsPerSecond: 192000 });
       rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
       rec.onerror = (e) => { why ||= `The browser could not record this video (${(e as any).error?.message ?? 'recording error'}).`; };
@@ -222,8 +227,8 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
       let movedAt = Date.now();
       await new Promise<void>((resolve) => {
         const iv = setInterval(() => {
-          const t = v.currentTime;
-          hop(v, cuts);
+          const t = v.currentTime - off;
+          hop(v, cuts, off);
           const done = Math.max(0, editedTime(t, cuts));
           // A video that stops moving for 5 seconds (a stuck seek) must not hang the export.
           if (Math.abs(t - lastT) > 0.01) { lastT = t; movedAt = Date.now(); }
@@ -251,7 +256,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     }
     stream?.getTracks().forEach((t) => t.stop());
     setExp(null);
-    v.currentTime = 0;
+    v.currentTime = off;
     if (!why && !chunks.length) why = 'The browser recorded nothing from this video. Try a shorter clip, or download the cut list instead.';
     if (why) {
       setWhy(why);
@@ -275,7 +280,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     let shown = 0;
     try {
       // MP4 and MOV: read the sound piece by piece, so any length works.
-      setVol(await streamLevels(f, (x) => { const pct = Math.floor(x * 100); if (pct !== shown) setListened((shown = pct)); }));
+      setVol(await streamLevels(f, (x) => { const pct = Math.floor(x * 100); if (pct !== shown) setListened((shown = pct)); }, rec.range));
     } catch (e) {
       // Other files (WebM, for example) are read whole, which only works while they are not too big.
       if (f.size > WHOLE_FILE_LIMIT) setError(`${e instanceof Error ? e.message : 'This video could not be read.'} Videos over ${WHOLE_FILE_LIMIT / 1048576} MB need to be MP4 or MOV.`);
@@ -286,7 +291,8 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
           const audio = await ctx.decodeAudioData(await f.arrayBuffer());
           const mono = new Float32Array(audio.length);
           for (let c = 0; c < audio.numberOfChannels; c++) audio.getChannelData(c).forEach((s, i) => (mono[i] += s / audio.numberOfChannels));
-          setVol(levels(mono, audio.sampleRate));
+          const all = levels(mono, audio.sampleRate);
+          setVol(rec.range ? all.slice(Math.round(rec.range.start / 0.02), Math.round(rec.range.end / 0.02)) : all);
         } catch {
           setError('Could not read the sound of this video. It may have no audio, or a format this browser cannot read.');
         }
@@ -295,7 +301,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     setBusy(false);
   }
 
-  const total = vol ? vol.length * 0.02 : duration;
+  const total = vol ? vol.length * 0.02 : partLen || duration;
   const silences = useMemo(() => (vol ? findSilences(vol, threshold, minSilence, buffer) : []), [vol, threshold, minSilence, buffer]);
   const segs = useMemo(() => (vol ? segments(silences, edits.splits, edits.overrides, total) : []), [vol, silences, edits, total]);
   const cuts = useMemo(() => cutSpans(segs), [segs]);
@@ -305,7 +311,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
   // Saves the project: a second after every change, and again when leaving the editor.
   const persist = () => {
     if (!file || !vol) return;
-    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), hasVideo: meta.current.hasVideo, updatedAt: Date.now() }).then(() => setAutosaved(true), () => {});
+    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), hasVideo: meta.current.hasVideo, updatedAt: Date.now() }).then(() => setAutosaved(true), () => {});
   };
   const persistRef = useRef(persist);
   persistRef.current = persist;
@@ -332,7 +338,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
   };
   const choose = (hide: boolean) => current && change({ ...edits, overrides: [...edits.overrides, { start: current.start, end: current.end, hide }] });
   function cutHere() {
-    const t = video.current?.currentTime ?? 0;
+    const t = (video.current?.currentTime ?? off) - off;
     if (!vol || t <= 0.05 || t >= total - 0.05 || segs.some((s) => Math.abs(s.start - t) < 0.05)) return;
     change({ ...edits, splits: [...edits.splits, t] });
     setSelected(t);
@@ -383,12 +389,16 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
     const tick = () => {
       const v = video.current;
       if (v && total) {
-        const t = v.currentTime;
+        if (rec.range && !v.seeking) {
+          if (v.currentTime < off - 0.05) v.currentTime = off;
+          else if (!v.paused && v.currentTime >= off + total) { v.pause(); v.currentTime = off + total; }
+        }
+        const t = v.currentTime - off;
         if (head.current) head.current.style.left = `${t * perSec}px`;
         if (clockText.current) clockText.current.textContent = `${clock(editedTime(t, cuts))} / ${clock(total - removed)}`;
         const el = scroller.current;
         if (el && !v.paused && (t * perSec < el.scrollLeft || t * perSec > el.scrollLeft + el.clientWidth)) el.scrollLeft = t * perSec - 40;
-        if (edited && !v.paused) hop(v, cuts);
+        if (edited && !v.paused) hop(v, cuts, off);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -399,7 +409,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
   function seek(e: React.MouseEvent<HTMLDivElement>) {
     const t = Math.max(0, Math.min(total, (e.clientX - e.currentTarget.getBoundingClientRect().left) / perSec));
     setSelected(t);
-    if (video.current) video.current.currentTime = t;
+    if (video.current) video.current.currentTime = t + off;
   }
 
   function zoomBy(f: number, anchorX?: number) {
@@ -438,10 +448,10 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
         return;
       }
       const kept = live.current.segs.filter((s) => !s.hidden);
-      const t = v.currentTime;
+      const t = v.currentTime - off;
       const to = e.key === 'ArrowRight' ? kept.find((s) => s.start > t + 0.05) : [...kept].reverse().find((s) => s.start < t - 0.3);
       if (!to) return;
-      v.currentTime = to.start;
+      v.currentTime = to.start + off;
       setSelected(to.start + 1e-6);
     };
     // A focused button or checkbox would otherwise be pressed again when Space is released.
@@ -500,10 +510,14 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
         <div className="space-y-3">
           {actions && createPortal(<>
             <button onClick={() => { persistRef.current(); onBack(); }} className={`${btnGhost} !min-h-[36px] !px-3`}><ArrowLeft size={14} aria-hidden /> Projects</button>
-            <label className={`${btnGhost} !min-h-[36px] !px-3 cursor-pointer`}>
-              <Upload size={14} aria-hidden /> {file ? 'Change video' : 'Choose video'}
-              <input type="file" accept="video/*,audio/*" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
-            </label>
+            {file ? (
+              <button onClick={() => { persistRef.current(); onChangePart(); }} disabled={busy} className={`${btnGhost} !min-h-[36px] !px-3`}><Crop size={14} aria-hidden /> Change part</button>
+            ) : (
+              <label className={`${btnGhost} !min-h-[36px] !px-3 cursor-pointer`}>
+                <Upload size={14} aria-hidden /> Choose video
+                <input type="file" accept="video/*,audio/*" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+              </label>
+            )}
             <button onClick={() => start()} disabled={!file || busy} className={`${btn} !min-h-[36px] !px-3`}>
               {busy ? <Spinner /> : <Scissors size={14} aria-hidden />} {busy ? `Listening… ${listened}%` : vol ? 'Restart' : 'Start'}
             </button>
@@ -519,7 +533,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
           {notice && <p role="status" className="text-sm text-st-mute text-right">{notice}</p>}
         <section className={`${card} p-4`}>
           {url ? (
-            <video ref={video} src={url} controls onLoadedMetadata={(e) => setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0)} className="w-full max-h-[50vh] rounded-lg bg-black" />
+            <video ref={video} src={url} controls onLoadedMetadata={(e) => { setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0); if (off) e.currentTarget.currentTime = off; }} className="w-full max-h-[50vh] rounded-lg bg-black" />
           ) : (
             <div className="aspect-video grid place-items-center rounded-lg bg-st-surface text-sm text-st-mute">Choose a video to begin</div>
           )}
@@ -599,7 +613,7 @@ export function Editor({ actions, rec, blob, onBack }: { actions: HTMLElement | 
             {dlg === 'confirm' && (
               <>
                 <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-                  <dt className="text-st-mute">Original length</dt><dd className="text-right tabular-nums">{span(total)}</dd>
+                  <dt className="text-st-mute">{rec.range ? 'Chosen part' : 'Original length'}</dt><dd className="text-right tabular-nums">{span(total)}</dd>
                   <dt className="text-st-mute">Removed</dt><dd className="text-right tabular-nums">{span(removed)}</dd>
                   <dt className="text-st-mute">Final length</dt><dd className="text-right tabular-nums font-medium">{span(total - removed)}</dd>
                   <dt className="text-st-mute">Estimated time</dt><dd className="text-right tabular-nums font-medium">about {span(total - removed + 3)}</dd>

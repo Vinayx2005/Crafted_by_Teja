@@ -3,7 +3,7 @@
 // each piece is measured and thrown away. The whole file is never loaded into memory.
 
 import { body, kid, kids, readHeader, topBoxes, view, type Box } from './mp4-flatten';
-import { toLevels, WINDOW } from './silence';
+import { toLevels, WINDOW, type Span } from './silence';
 
 const RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
 
@@ -137,7 +137,7 @@ export async function audioTrack(src: Blob): Promise<AudioTrack> {
 }
 
 /** 0-100 volume readings, one per 20 ms, read piece by piece. Throws when this file or browser cannot do it. */
-export async function streamLevels(src: Blob, onProgress?: (done: number) => void): Promise<number[]> {
+export async function streamLevels(src: Blob, onProgress?: (done: number) => void, range?: Span | null): Promise<number[]> {
   if (typeof AudioDecoder === 'undefined') throw new Error('This browser cannot decode sound in pieces. Use Chrome or Edge.');
   const t = await audioTrack(src);
   const config: AudioDecoderConfig = { codec: t.codec, sampleRate: t.sampleRate, numberOfChannels: t.channels, ...(t.config ? { description: t.config } : {}) };
@@ -168,15 +168,21 @@ export async function streamLevels(src: Blob, onProgress?: (done: number) => voi
   });
   dec.configure(config);
 
+  // Only the chosen part is read: samples before `from` or from `to` on are skipped.
+  const from = range?.start ?? 0;
+  const to = range?.end ?? Infinity;
+  const inside = (i: number) => t.times[i] >= from && t.times[i] < to;
+  const wanted = t.chunks.filter((c) => t.times[c.first + c.count - 1] >= from && t.times[c.first] < to);
+  const total = wanted.reduce((n, c) => n + c.count, 0);
   let done = 0;
-  for (const c of t.chunks) {
+  for (const c of wanted) {
     if (failed) break;
     const bytes = new Uint8Array(await src.slice(c.at, c.at + c.size).arrayBuffer());
     for (let i = c.first, p = 0; i < c.first + c.count; p += t.sizes[i], i++) {
-      dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(t.times[i] * 1e6), data: bytes.subarray(p, p + t.sizes[i]) }));
+      if (inside(i)) dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round(t.times[i] * 1e6), data: bytes.subarray(p, p + t.sizes[i]) }));
     }
     done += c.count;
-    onProgress?.(done / t.sizes.length);
+    onProgress?.(done / total);
     // Keep only a little sound waiting, so memory stays small however long the video is.
     while (dec.decodeQueueSize > 64 && !failed) await new Promise((r) => dec.addEventListener('dequeue', r, { once: true }));
   }
@@ -185,5 +191,7 @@ export async function streamLevels(src: Blob, onProgress?: (done: number) => voi
   if (failed) throw failed instanceof Error ? failed : new Error('The sound could not be decoded.');
   if (cnt) rms.push(Math.sqrt(acc / cnt));
   if (!rms.length) throw new Error('No sound was found in this video.');
+  // Exactly one reading per 20 ms of the part, so the timeline matches the video.
+  if (Number.isFinite(to)) rms.length = Math.min(rms.length, Math.round((to - from) / WINDOW));
   return toLevels(rms);
 }

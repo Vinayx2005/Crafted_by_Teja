@@ -74,3 +74,22 @@ describe('project files', () => {
     expect(p.overrides).toEqual([]);
   });
 });
+
+import { hms, parseClock } from '@/lib/studio/silence';
+
+describe('typed times', () => {
+  it('reads seconds, m:ss and h:mm:ss', () => {
+    expect(parseClock('75')).toBe(75);
+    expect(parseClock('10:00')).toBe(600);
+    expect(parseClock(' 1:02:03 ')).toBe(3723);
+    expect(parseClock('1:30.5')).toBe(90.5);
+  });
+  it('rejects anything else', () => {
+    for (const bad of ['', 'abc', '1::2', '1:2:3:4', '-5', '10 min']) expect(parseClock(bad)).toBeNull();
+  });
+  it('writes times back', () => {
+    expect(hms(600)).toBe('10:00');
+    expect(hms(3723)).toBe('1:02:03');
+    expect(hms(5.4)).toBe('0:05');
+  });
+});

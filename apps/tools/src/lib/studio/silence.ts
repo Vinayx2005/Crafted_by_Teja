@@ -135,3 +135,19 @@ export function parseProject(text: string): Project | null {
     overrides,
   };
 }
+
+/** Reads a typed time: "75", "1:15", "10:00" or "1:02:03" (seconds, m:ss, h:mm:ss). Null if it is not a time. */
+export function parseClock(text: string): number | null {
+  const parts = text.trim().split(':');
+  if (!parts.length || parts.length > 3 || parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) return null;
+  return parts.reduce((n, p) => n * 60 + Number(p), 0);
+}
+
+/** Times as people read them: "4:05", or "1:02:03" past an hour. */
+export function hms(t: number): string {
+  const s = Math.max(0, Math.round(t));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}

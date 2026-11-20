@@ -2,14 +2,15 @@
 // "projects" holds the small record (settings, edits, the volume readings); "videos" holds the
 // video file itself, kept apart so saving an edit never rewrites the big file.
 
-import type { Override } from './silence';
+import type { Override, Span } from './silence';
 
 export type Rec = {
   id: string;
   name: string;
   fileName: string;
   size: number;
-  total: number; // seconds, once analysed
+  range?: Span | null; // the part of the video being edited (seconds); none means all of it
+  total: number; // seconds of the part, once analysed
   removed: number; // seconds cut by the current edits
   threshold: number;
   minSilence: number;
@@ -43,6 +44,7 @@ async function run<T>(store: 'projects' | 'videos', mode: IDBTransactionMode, go
 }
 
 export const listProjects = async () => (await run<Rec[]>('projects', 'readonly', (s) => s.getAll())).sort((a, b) => b.updatedAt - a.updatedAt);
+export const getProject = async (id: string) => (await run<Rec | undefined>('projects', 'readonly', (s) => s.get(id))) ?? null;
 export const putProject = (r: Rec) => run('projects', 'readwrite', (s) => s.put(r));
 export const getVideo = async (id: string) => (await run<Blob | undefined>('videos', 'readonly', (s) => s.get(id))) ?? null;
 export const saveVideo = (id: string, b: Blob) => run('videos', 'readwrite', (s) => s.put(b, id));
