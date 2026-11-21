@@ -85,7 +85,7 @@ export function useConfirm() {
   const dialog = req ? (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) done(false); }}>
       <div role="alertdialog" aria-modal="true" aria-label="Please confirm" className="w-full max-w-sm bg-white rounded-xl shadow-xl border border-st-line p-5">
-        <p className="text-sm text-st-ink leading-relaxed">{req.message}</p>
+        <p className="text-sm text-st-ink leading-relaxed [overflow-wrap:anywhere]">{req.message}</p>
         <div className="mt-5 flex justify-end gap-2">
           <button autoFocus onClick={() => done(false)} className={btnGhost}>Cancel</button>
           <button onClick={() => done(true)} className={req.danger ? `${btn} !bg-red-600 hover:!bg-red-700` : btn}>{req.ok}</button>

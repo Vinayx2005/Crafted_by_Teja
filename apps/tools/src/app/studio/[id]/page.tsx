@@ -29,6 +29,7 @@ export default function BrandScreen() {
   const section = raw in TITLES ? raw : 'create';
   const [page, setPage] = useState<Page | null>(null);
   const [actions, setActions] = useState<HTMLElement | null>(null); // header spot for the Silence remover buttons
+  const [videoActions, setVideoActions] = useState<HTMLElement | null>(null); // and for the Video Editor's
   const [research, setResearch] = useState<'competitors' | 'works'>('competitors');
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -85,6 +86,7 @@ export default function BrandScreen() {
           <h1 className="text-xl font-semibold tracking-tight mt-1">{TITLES[section]}</h1>
         </div>
         <div ref={setActions} className={section === 'silence' ? 'flex flex-wrap items-center justify-end gap-2' : 'hidden'} />
+        <div ref={setVideoActions} className={section === 'video' ? 'flex flex-wrap items-center justify-end gap-2' : 'hidden'} />
       </header>
       {section !== 'create' && section !== 'library' && <div className="mb-4"><ErrorNote text={error} /></div>}
 
@@ -97,7 +99,7 @@ export default function BrandScreen() {
       <div hidden={section !== 'silence'}><Silence actions={actions} /></div>
 
       {/* Mounted only when open: it talks to the editor bridge on this PC. */}
-      {section === 'video' && <VideoEditor />}
+      {section === 'video' && <VideoEditor actions={videoActions} />}
 
       <div hidden={section !== 'research'} className="space-y-5">
         <div role="tablist" aria-label="Research" className="inline-flex rounded-lg bg-st-surface p-1">

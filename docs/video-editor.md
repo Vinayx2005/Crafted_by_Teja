@@ -25,7 +25,7 @@ The editor uses exactly the same skills as editing in chat. The page only sends 
 1. **Start the bridge:** double-click `D:\Editing\editor-bridge\start.cmd` and keep that window open while you edit. (Or run `node D:\Editing\editor-bridge\server.mjs`.)
 2. **Open Studio on the same PC:** go to **Video Editor** in the sidebar.
 3. **It connects by itself:** there is nothing to paste. The bridge gives its access key only to the Studio pages, and the browser remembers it.
-4. **Open your video:** press **Open folder** and choose the folder on your PC that holds the footage, in the normal Windows "Select folder" window (see *Opening a folder* below).
+4. **Start a project:** the Video Editor opens on your projects page. Press **Create new project** and choose (or make) the folder on your PC for this video, in the normal Windows "Select folder" window (see *Create new project* below). Then add the footage under **Media files**.
 5. **Sign the editor in to Claude once:** press **Sign in with Claude** at the top of the page and finish signing in on the Claude page that opens. The panel turns green by itself. If the sign-in page shows a code, paste it into the box and press **Submit code**.
 
 If the bridge is not running, the page shows **"Start the editor on your PC"** with these steps.
@@ -55,25 +55,33 @@ The page is laid out like a video editor:
 └──────────────────────────────────────────────────┴────┘
 ```
 
-### Toolbar (above the editor)
-- **Video picker:** every project in `D:\Editing\projects`, including grouped ones (for example *90 day mentroship videos → Orientation*). The video being edited right now is marked "• editing".
-- **Open folder:** opens a video folder from anywhere on this PC (see below).
-- **New video:** creates an empty project with `raw/`, `work/` and `out/` folders, optionally inside an existing group.
+### Projects page (what Video Editor opens on)
+Like the Silence remover, **Video Editor** first shows all your projects as cards, with **Create new project** at the top right.
+- **Each card** shows the project's name, its folder on the PC (and its group, for example *90 day mentroship videos*), and where it stands: *No footage yet*, *Footage added*, *Being edited*, *Preview ready* or *Final ready*. It also shows the number of footage videos and when it was last edited. A project the AI editor or an export is working on shows **working now**.
+- **Open** (or a click on the card) opens the project in the editor.
+- **Remove from the list** (bin icon) appears only on projects added from another folder. It removes only the link; the folder and everything in it stay on your PC.
+- **No projects yet:** the page shows a short explanation and the **Create new project** button.
+
+### Create new project
+1. Press **Create new project**. The standard Windows **Select folder** window opens. If you don't see it, check the taskbar.
+2. Choose the folder where this video's edit should live, for example `D:\Videos\My vlog`. To start fresh, press **New folder** in that window, name it, and choose it.
+3. The project opens straight away, named after the folder. Add the footage under **Media files → Footage** (**Upload**, or **Add from this PC**), then start editing.
+
+The whole edit happens in that folder. Choosing a folder that's already a project just opens it.
+
+### Toolbar (inside a project)
+- **← Projects:** back to the projects page.
+- **Project name and folder:** where this edit lives on the PC.
 - **Export:** renders the video to a file (see below).
+- **Refresh:** reloads the file lists.
 
-### Opening a folder
-**Open folder** works like opening a project in any other editor:
-1. The standard Windows **Select folder** window opens. If you don't see it, check the taskbar.
-2. Choose the folder that holds the video's footage, for example `D:\Videos\My vlog`, and press **Open folder**.
-3. It opens straight away and appears in the video picker from then on.
-
-What happens behind the scenes:
+What happens behind the scenes when a folder becomes a project:
 - **Nothing is copied or moved.** The folder is linked into `D:\Editing\projects\<folder name>` with a Windows folder link (a junction). Every tool, skill and render sees it as a normal project, while the files stay where they are.
 - **Folders added inside it:** `raw\`, `work\` and `out\` are created when missing. The edit's working files go in `work\`, and outputs (storyboards, previews, finals, .srt files) go in `out\`.
 - **Footage:** videos and audio already sitting in the folder itself show under **Footage**, next to anything in `raw\`.
 - **Same folder again:** opening a folder that's already open selects it. A folder inside `D:\Editing\projects` opens directly, without a link.
 - **Refused:** a whole drive, and `D:\Editing` itself.
-- **Removing it from the list:** delete the link `D:\Editing\projects\<folder name>`. In File Explorer it has a shortcut arrow. Deleting the link leaves your folder and footage untouched.
+- **Removing it from the list:** use the bin icon on its card. It deletes only the link `D:\Editing\projects\<folder name>`, which has a shortcut arrow in File Explorer. Your folder and footage stay untouched.
 
 ### Export
 **Export** renders the current edit straight from `work/edit.json` (or `work/promo.json`). It uses the same Remotion composition and asset staging as `tools/render.py`, with no AI turn involved, so it needs no Claude sign-in. Pick one of two outputs:
@@ -199,7 +207,7 @@ The keys do nothing while you type in a box, or while a dialog or the Silence re
 
 ## 4. An edit from start to finish
 
-1. **Create a video** with **New video**, and add the raw footage under **Media files → Footage**.
+1. **Create a project** with **Create new project** (pick its folder), and add the raw footage under **Media files → Footage**.
 2. Open **Ask AI** and say *"Start editing this video"*. The editor reads Part 1 of the skill, looks at the folder and asks the **intake questions** (cleanup, colour grade, captions, format, style, B-roll, SFX…) in the AI editor panel, with its default for each.
 3. **Answer in the panel.** The answers are saved to `work/brief.md` (**Docs → Brief**).
 4. It analyses the footage, converts HDR if needed, cuts it if the cleanup isn't done (Part 2), transcribes, and writes the **graphics plan** (**Docs → Graphics plan**). It waits for you.
@@ -276,6 +284,7 @@ All routes are under `http://127.0.0.1:4317/api` and need the `X-Editor-Token` h
 | `POST /p/message?id=` · `POST /p/stop?id=` · `POST /p/new-chat?id=` | Send a message, stop the job, start a new conversation |
 | `POST /p/upload?id=&name=` · `POST /p/add-local?id=` | Add raw footage |
 | `GET /pair` | The access key, only for Studio's addresses (automatic connect) |
-| `POST /open-folder` `{path?}` | Show the Windows folder window (or use a typed path) and open that folder as a project |
+| `POST /open-folder` `{path?, title?}` | Show the Windows folder window (or use a typed path) and open that folder as a project |
+| `POST /projects/remove` `{id}` | Take a project added from another folder off the list (removes only its link) |
 | `GET /p/export?id=` · `POST /p/export?id=` `{mode: preview\|final\|cancel}` | Export status (existing files, running job), start an export, cancel it |
 | `GET /p/file?id=&path=` | Serve a file from `raw/`, `work/` or `out/` (supports seeking) |

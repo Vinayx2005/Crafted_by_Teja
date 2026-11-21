@@ -16,8 +16,9 @@
 // It only works in a browser on that PC: the bridge listens on 127.0.0.1 only.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  CheckCircle2, Clock, Keyboard, FolderOpen, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
+  ArrowLeft, CheckCircle2, Clapperboard, Clock, Keyboard, Trash2, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
   MessageSquare, MessageSquarePlus, Minus, Music, Play, Plug, Plus, RefreshCw, Scissors, Send, Sparkles, Square, Unlock, Upload, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { btn, btnGhost, card, ErrorNote, field, label, Spinner, useConfirm } from '../ui';
@@ -30,7 +31,10 @@ const TOKEN_KEY = 'studio-editor-token';
 type Step = { key: string; label: string; done: boolean };
 type FileInfo = { name: string; path: string; size: number; modified: number; kind: 'video' | 'image' | 'audio' | 'text' | 'other' };
 type TextFile = { name: string; path: string; modified: number };
-type Project = { id: string; name: string; group: string | null; updated: number };
+type Project = {
+  id: string; name: string; group: string | null; updated: number;
+  dir: string; linked: boolean; footage: number; final: boolean; preview: boolean; edit: boolean;
+};
 type Detail = {
   id: string; name: string; dir: string; steps: Step[]; raw: FileInfo[]; out: FileInfo[]; workImages: FileInfo[]; workText: TextFile[];
   brief: string | null; plan: string | null; session: string | null; running: boolean; busyElsewhere: string | null;
@@ -92,12 +96,12 @@ function useBridge() {
 type Bridge = ReturnType<typeof useBridge>;
 
 // ---------- page ----------
-export default function VideoEditor() {
+export default function VideoEditor({ actions }: { actions?: HTMLElement | null }) {
   const bridge = useBridge();
   if (bridge.conn === 'checking') return <p className="text-st-mute text-sm flex items-center gap-2"><Spinner /> Looking for the editor on this PC…</p>;
   if (bridge.conn === 'offline') return <Offline onRetry={bridge.check} />;
   if (bridge.conn === 'token') return <NoConnect error={bridge.error} onRetry={bridge.check} />;
-  return <Editor bridge={bridge} />;
+  return <Editor bridge={bridge} actions={actions ?? null} />;
 }
 
 function NoConnect({ error, onRetry }: { error: string; onRetry: () => void }) {
@@ -126,130 +130,117 @@ function Offline({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-// Open folder: the bridge shows the normal Windows "Select folder" window on this PC and
-// opens the chosen folder as a project (linked in, nothing copied).
-function OpenFolder({ bridge, onOpened, big = false }: { bridge: Bridge; onOpened: (id: string) => void; big?: boolean }) {
-  const [waiting, setWaiting] = useState(false);
-  const [error, setError] = useState('');
-  async function open() {
-    setError('');
-    setWaiting(true);
-    try {
-      const r = await bridge.call<{ id?: string; cancelled?: boolean }>('/api/open-folder', {});
-      if (r.id) onOpened(r.id);
-    } catch (e) { setError((e as Error).message); }
-    finally { setWaiting(false); }
-  }
-  return (
-    <span className="inline-flex flex-col gap-1">
-      <button onClick={open} disabled={waiting} className={big ? btn : btnGhost} title="Open a video project folder from this PC">
-        {waiting ? <Spinner /> : <FolderOpen size={15} aria-hidden />} {waiting ? 'Choose a folder…' : 'Open folder'}
-      </button>
-      {waiting && <span className="text-[11px] text-st-mute">Pick the folder in the window that opened. If you don&apos;t see it, check the taskbar.</span>}
-      {error && <span className="text-[11px] text-red-700 max-w-xs">{error}</span>}
-    </span>
-  );
-}
-
-function Welcome({ projects, bridge, onOpened }: { projects: Project[]; bridge: Bridge; onOpened: (id: string) => void }) {
-  return (
-    <section className={`${card} p-6 max-w-2xl space-y-4`}>
-      <div>
-        <h2 className="font-semibold">Open a video</h2>
-        <p className="text-sm text-st-mute mt-1 leading-relaxed">Choose the folder on this PC that holds your footage. The editor works on it where it is: nothing is copied or uploaded. It adds <code>raw</code>, <code>work</code> and <code>out</code> folders inside for the edit.</p>
-      </div>
-      <div className="flex flex-wrap items-start gap-2">
-        <OpenFolder big bridge={bridge} onOpened={onOpened} />
-        <NewProject projects={projects} bridge={bridge} onCreated={onOpened} />
-      </div>
-    </section>
-  );
-}
-
-// ---------- editor frame: toolbar + workspace ----------
-function Editor({ bridge }: { bridge: Bridge }) {
-  const [projects, setProjects] = useState<Project[]>([]);
+// ---------- editor frame: the projects page, or one project open ----------
+// Like the Silence remover: the Video Editor opens on the list of projects. "Create new project"
+// asks for a folder on this PC (the normal Windows "Select folder" window, which can also make a
+// new folder); the whole edit then happens in that folder.
+function Editor({ bridge, actions }: { bridge: Bridge; actions: HTMLElement | null }) {
+  const [projects, setProjects] = useState<Project[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
+  const [picking, setPicking] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const r = await bridge.call<{ projects: Project[]; busy: string | null }>('/api/projects');
       setProjects(r.projects);
       setBusy(r.busy);
-      // Keep the open video; else the one this browser had open last; else the newest. A video that
-      // no longer exists falls back the same way.
-      const has = (x: string | null | undefined) => !!x && r.projects.some((p) => p.id === x);
-      setSelected((s) => {
-        if (has(s)) return s;
-        let last = '';
-        try { last = localStorage.getItem('studio-editor-project') ?? ''; } catch {}
-        return has(last) ? last : r.projects[0]?.id ?? '';
-      });
+      setSelected((s) => (s && r.projects.some((p) => p.id === s) ? s : ''));
     } catch (e) { setError((e as Error).message); }
   }, [bridge]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (selected) try { localStorage.setItem('studio-editor-project', selected); } catch {} }, [selected]);
+
+  const create = useCallback(async () => {
+    setError('');
+    setPicking(true);
+    try {
+      const r = await bridge.call<{ id?: string; cancelled?: boolean }>('/api/open-folder', { title: 'Choose the folder for this video project' });
+      if (r.id) { await load(); setSelected(r.id); }
+    } catch (e) { setError((e as Error).message); }
+    finally { setPicking(false); }
+  }, [bridge, load]);
+
+  const open = selected && projects?.some((p) => p.id === selected) ? selected : '';
+  const createButton = (
+    <button onClick={create} disabled={picking} className={`${btn} !py-2 !min-h-[38px] !px-3`}>
+      {picking ? <Spinner /> : <Plus size={14} aria-hidden />} {picking ? 'Choose a folder…' : 'Create new project'}
+    </button>
+  );
 
   return (
     <div className="space-y-3">
+      {!open && actions && createPortal(createButton, actions)}
       <Account bridge={bridge} />
       <ErrorNote text={error} />
-      {selected && projects.some((p) => p.id === selected)
-        ? <Workspace key={selected} id={selected} bridge={bridge} projects={projects} busy={busy} onSelect={setSelected} onChanged={load} />
-        : !error && <Welcome projects={projects} bridge={bridge} onOpened={(id) => { load(); setSelected(id); }} />}
+      {picking && (
+        <p className={`${card} p-3 text-sm flex items-center gap-2`} role="status">
+          <Spinner /> Pick the folder for this project in the window that opened, or make a new one there with <b>New folder</b>. If you don&apos;t see the window, check the taskbar.
+        </p>
+      )}
+      {open
+        ? <Workspace key={open} id={open} bridge={bridge} project={projects!.find((p) => p.id === open)!} onBack={() => { setSelected(''); load(); }} onChanged={load} />
+        : <ProjectsHome projects={projects} busy={busy} bridge={bridge} createButton={createButton} onOpen={setSelected} onChanged={load} />}
     </div>
   );
 }
 
-function ProjectPicker({ projects, selected, busy, onSelect }: { projects: Project[]; selected: string; busy: string | null; onSelect: (id: string) => void }) {
-  const loose = projects.filter((p) => !p.group);
-  const groups = Array.from(new Set(projects.map((p) => p.group).filter(Boolean))) as string[];
-  return (
-    <select value={selected} onChange={(e) => onSelect(e.target.value)} aria-label="Video"
-      className="bg-white border border-st-line rounded-lg px-3 py-2 min-h-[38px] text-sm font-medium text-st-ink max-w-[16rem] focus:outline-none focus:border-18-orange">
-      {loose.map((p) => <option key={p.id} value={p.id}>{p.name}{busy === p.id ? ' • editing' : ''}</option>)}
-      {groups.map((g) => (
-        <optgroup key={g} label={g}>
-          {projects.filter((p) => p.group === g).map((p) => <option key={p.id} value={p.id}>{p.name}{busy === p.id ? ' • editing' : ''}</option>)}
-        </optgroup>
-      ))}
-    </select>
-  );
-}
+const ago = (t: number) => {
+  if (!t) return 'never';
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+};
 
-function NewProject({ projects, bridge, onCreated, open: startOpen = false }: { projects: Project[]; bridge: Bridge; onCreated: (id: string) => void; open?: boolean }) {
-  const [open, setOpen] = useState(startOpen);
-  const [name, setName] = useState('');
-  const [group, setGroup] = useState('');
+function ProjectsHome({ projects, busy, bridge, createButton, onOpen, onChanged }: {
+  projects: Project[] | null; busy: string | null; bridge: Bridge; createButton: React.ReactNode; onOpen: (id: string) => void; onChanged: () => void;
+}) {
+  const [ask, dialog] = useConfirm();
   const [error, setError] = useState('');
-  const groups = useMemo(() => Array.from(new Set(projects.map((p) => p.group).filter(Boolean))) as string[], [projects]);
-
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    try {
-      const { id } = await bridge.call<{ id: string }>('/api/projects', { name: name.trim(), group: group || undefined });
-      setOpen(startOpen); setName(''); setGroup('');
-      onCreated(id);
-    } catch (err) { setError((err as Error).message); }
+  async function remove(p: Project) {
+    const ok = await ask(`Remove "${p.name}" from the list? Only the link is removed: the folder ${p.dir} and everything in it stay on your PC, and you can add it again with Create new project.`, 'Remove from list', false);
+    if (!ok) return;
+    try { await bridge.call('/api/projects/remove', { id: p.id }); onChanged(); } catch (e) { setError((e as Error).message); }
   }
-
-  if (!open) return <button onClick={() => setOpen(true)} className={btnGhost} title="New video project"><FolderPlus size={15} aria-hidden /> New video</button>;
+  if (projects === null) return <p className="flex items-center gap-2 text-sm text-st-mute"><Spinner /> Loading your projects…</p>;
+  if (projects.length === 0)
+    return (
+      <div className={`${card} grid place-items-center gap-3 p-10 text-center`}>
+        <Clapperboard size={28} className="text-st-mute" aria-hidden />
+        <h2 className="font-semibold">No projects yet</h2>
+        <p className="max-w-sm text-sm text-st-mute">Create a project, choose the folder on your PC where this video&apos;s edit should live, add the footage, and start editing. Nothing is uploaded.</p>
+        {createButton}
+      </div>
+    );
+  const status = (p: Project) => p.final ? 'Final ready' : p.preview ? 'Preview ready' : p.edit ? 'Being edited' : p.footage ? 'Footage added' : 'No footage yet';
   return (
-    <form onSubmit={create} className={`${card} p-3 flex flex-wrap items-center gap-2`}>
-      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Video name" className={`${field} !w-56`} aria-label="Video name" />
-      {groups.length > 0 && (
-        <select value={group} onChange={(e) => setGroup(e.target.value)} className={`${field} !w-56`} aria-label="Folder">
-          <option value="">No folder</option>
-          {groups.map((g) => <option key={g} value={g}>{g}</option>)}
-        </select>
-      )}
-      <button disabled={!name.trim()} className={btn}>Create</button>
-      {!startOpen && <button type="button" onClick={() => setOpen(false)} className={btnGhost}>Cancel</button>}
-      <div className="w-full"><ErrorNote text={error} /></div>
-    </form>
+    <>
+      {dialog}
+      <ErrorNote text={error} />
+      <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+        {projects.map((p) => (
+          <li key={p.id} className={`${card} flex flex-col justify-between gap-4 p-4`}>
+            <button onClick={() => onOpen(p.id)} className="rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange/40">
+              <h3 className="truncate font-semibold">{p.name}</h3>
+              <p className="mt-0.5 truncate text-xs text-st-mute" title={p.dir}>{p.group ? `${p.group} · ` : ''}{p.dir}</p>
+              <p className="mt-2 text-sm">
+                {status(p)}{busy === p.id && <span className="ml-1.5 rounded-full bg-18-orange/10 text-18-orange px-2 py-0.5 text-[11px] font-medium">working now</span>}
+              </p>
+              <p className="mt-1 text-xs text-st-mute">{p.footage} {p.footage === 1 ? 'video' : 'videos'} of footage · Edited {ago(p.updated)}</p>
+            </button>
+            <div className="flex items-center justify-between">
+              <button onClick={() => onOpen(p.id)} className={`${btnGhost} !min-h-[38px] !px-3`}>Open</button>
+              {p.linked && (
+                <button onClick={() => remove(p)} aria-label={`Remove ${p.name} from the list`} title="Remove from the list (keeps the folder)" className={`${btnGhost} !min-h-[38px] !px-2.5`}><Trash2 size={15} aria-hidden /></button>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="pt-1">{createButton}</div>
+    </>
   );
 }
 
@@ -320,7 +311,7 @@ const changesPrompt = (stage: FirstDraft['stage'] | undefined, text: string) =>
 // Storyboard sheets: images in out/ (and work/) named like the skill's sheets.
 const isSheet = (f: FileInfo) => f.kind === 'image' && /storyboard|scenes|finished|frames|transition|sheet/i.test(f.name);
 
-function Workspace({ id, bridge, projects, busy, onSelect, onChanged }: { id: string; bridge: Bridge; projects: Project[]; busy: string | null; onSelect: (id: string) => void; onChanged: () => void }) {
+function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bridge: Bridge; project: Project; onBack: () => void; onChanged: () => void }) {
   const [d, setD] = useState<Detail | null>(null);
   const [timeline, setTimeline] = useState<{ file: string | null; data: Record<string, unknown> | null } | null>(null);
   const [events, setEvents] = useState<Ev[]>([]);
@@ -495,9 +486,11 @@ function Workspace({ id, bridge, projects, busy, onSelect, onChanged }: { id: st
     <div className="space-y-3">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
-        <ProjectPicker projects={projects} selected={id} busy={busy} onSelect={onSelect} />
-        <OpenFolder bridge={bridge} onOpened={(nid) => { onChanged(); onSelect(nid); }} />
-        <NewProject projects={projects} bridge={bridge} onCreated={(nid) => { onChanged(); onSelect(nid); }} />
+        <button onClick={onBack} className={btnGhost} title="Back to all projects"><ArrowLeft size={15} aria-hidden /> Projects</button>
+        <div className="min-w-0 px-1">
+          <h2 className="font-semibold text-sm truncate">{project.name}</h2>
+          <p className="text-[11px] text-st-mute truncate max-w-[28rem]" title={project.dir}>{project.dir}</p>
+        </div>
         <ExportButton id={id} bridge={bridge} onDone={refresh}
           onPlay={(p) => setView({ kind: 'video', path: p, name: p.split('/').pop() || p, play: true })} />
         <div className="flex-1" />
