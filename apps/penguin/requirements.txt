@@ -1,0 +1,14 @@
+faster-whisper>=1.2
+pyrnnoise>=0.4
+scipy>=1.14
+numpy>=2.0
+pyserial>=3.5
+sounddevice>=0.5
+num2words>=0.5      # tuning/ scripts only
+google-genai>=2.0   # Gemini (brain.py)
+edge-tts>=7.3       # Penguin's spoken voice (brain.py)
+ytmusicapi
+google-auth-oauthlib>=1.2  # Google Calendar sign-in (gcal.py)
+ddgs>=9           # web_lookup fallback search (knowledge.py)
+pillow>=10          # the floating button's cartoon penguin (bubble.py); optional, plain shapes without it
+mcp<2             # extra tools through MCP servers (mcp_tools.py); v2 changed the API

@@ -1,0 +1,33 @@
+__pycache__/
+firmware/*/build/
+firmware/*/sdkconfig
+firmware/*/sdkconfig.old
+firmware/*/managed_components/
+firmware/*/dependencies.lock
+# recordings of your own voice stay local
+tuning/*.wav
+tuning/refs.json
+
+# secrets
+.env
+.env.local
+penguin.log
+settings.json
+
+# Google Calendar OAuth (gcal.py)
+client_secret.json
+gcal_token.json
+pft_token.json
+ytm_token.json
+tasks_token.json
+gmail_token.json
+memory.json
+notes/
+english/
+
+# MCP: your servers (commands, env) and the tools you chose to always allow
+mcp.json
+mcp_permissions.json
+
+# console output when started from the launcher
+penguin.out

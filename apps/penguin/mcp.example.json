@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\you\\Documents"],
+      "enabled": false,
+      "allow": [],
+      "deny": [],
+      "auto_allow_read_only": true
+    }
+  }
+}
