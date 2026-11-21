@@ -23,6 +23,9 @@ export type Rec = {
   flags?: Flag[]; // the highlighted unwanted parts
   hasVideo: boolean;
   updatedAt: number;
+  // Set when the project was started from the Video Editor: which edit project and which file
+  // (e.g. "raw/raw.mp4"). The video is read again from D:\Editing instead of kept in the browser.
+  link?: { editorId: string; path: string };
 };
 
 const open = () =>

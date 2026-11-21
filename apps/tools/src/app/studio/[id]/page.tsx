@@ -16,9 +16,10 @@ import Competition from './competition';
 import { Direction, PlaybookBox, usePlaybook } from './learnings';
 import Knowledge from './knowledge';
 import Silence from './silence-home';
+import VideoEditor from './video-editor';
 import Work from './work';
 
-const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', silence: 'Silence remover', research: 'Research', settings: 'Brand Settings' };
+const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', silence: 'Silence remover', video: 'Video Editor', research: 'Research', settings: 'Brand Settings' };
 
 export default function BrandScreen() {
   const { id } = useParams<{ id: string }>();
@@ -94,6 +95,9 @@ export default function BrandScreen() {
       <div hidden={section !== 'knowledge'}><Knowledge page={page} /></div>
 
       <div hidden={section !== 'silence'}><Silence actions={actions} /></div>
+
+      {/* Mounted only when open: it talks to the editor bridge on this PC. */}
+      {section === 'video' && <VideoEditor />}
 
       <div hidden={section !== 'research'} className="space-y-5">
         <div role="tablist" aria-label="Research" className="inline-flex rounded-lg bg-st-surface p-1">

@@ -7,7 +7,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { BookOpen, Check, ChevronDown, ChevronsLeft, ChevronsRight, FolderOpen, Home, LogOut, Menu, Palette, Scissors, Search, Sparkles, X } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronsLeft, ChevronsRight, Clapperboard, FolderOpen, Home, LogOut, Menu, Palette, Scissors, Search, Sparkles, X } from 'lucide-react';
 import { api, configured, errorText, supabase } from '@/lib/studio/client';
 import { btn, btnGhost, card, ErrorNote, field, label, menuItem, Popover, Spinner } from './ui';
 
@@ -94,6 +94,7 @@ const NAV = [
   { key: 'library', label: 'Library', icon: FolderOpen },
   { key: 'knowledge', label: 'Knowledge', icon: BookOpen },
   { key: 'silence', label: 'Silence remover', icon: Scissors },
+  { key: 'video', label: 'Video Editor', icon: Clapperboard },
   { key: 'research', label: 'Research', icon: Search },
   { key: 'settings', label: 'Brand Settings', icon: Palette },
 ] as const;
@@ -111,8 +112,8 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
 
   const brandId = pathname.match(/^\/studio\/([0-9a-f-]{36})/i)?.[1] ?? '';
   const section = brandId ? params.get('section') || 'create' : 'home';
-  // The Silence remover is a video editor: it gets the whole width (the timeline needs it).
-  const wide = section === 'silence';
+  // The Silence remover and the Video Editor get the whole width (timeline, chat beside the outputs).
+  const wide = section === 'silence' || section === 'video';
 
   // Fresh on every screen change, so a new or archived brand shows up straight away.
   useEffect(() => {

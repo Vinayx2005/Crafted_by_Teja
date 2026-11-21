@@ -59,7 +59,10 @@ const NO_EDITS: Edits = { splits: [], overrides: [] };
 
 // One project open in the editor. `actions` is the spot in the page header (same line as the title)
 // where the buttons are shown. Edits are saved to the project a second after every change.
-export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: HTMLElement | null; rec: Rec; blob: Blob | null; onBack: () => void; onChangePart: () => void }) {
+// `onFile` (optional): when opened from the Video Editor, every file this makes (the exported
+// video, the cut list, the project file) is also handed over, so it can be saved into the edit.
+export type SilenceFileKind = 'video' | 'cut-list' | 'project';
+export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, onFile }: { actions: HTMLElement | null; rec: Rec; blob: Blob | null; onBack: () => void; backLabel?: string; onChangePart: () => void; onFile?: (name: string, blob: Blob, kind: SilenceFileKind) => void }) {
   // Everything here is measured from the start of the chosen part ("part time"); `off` turns it into video time.
   const off = rec.range?.start ?? 0;
   const partLen = rec.range ? rec.range.end - rec.range.start : 0;
@@ -183,11 +186,16 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   const base = () => (file?.name ?? 'video').replace(/\.[^.]+$/, '');
+  // Downloads the file, and hands it to the Video Editor when opened from there.
+  function deliver(name: string, blob: Blob, kind: SilenceFileKind) {
+    save(name, blob);
+    onFile?.(name, blob, kind);
+  }
 
   function saveProject() {
     if (!file) return;
     const p: Project = { v: 1, video: { name: file.name, size: file.size }, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides };
-    save(`${base()}.silence.json`, new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }));
+    deliver(`${base()}.silence.json`, new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }), 'project');
     setNotice('Project saved. Open it later with "Open project", then choose the same video.');
   }
 
@@ -280,7 +288,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
     // Chrome writes MP4 like a live stream (no length, no seeking); rewrite it as a normal MP4.
     const blob = raw.type.startsWith('video/mp4') ? await flattenMp4(raw).catch(() => raw) : raw;
     setResult({ name, blob });
-    save(name, blob);
+    deliver(name, blob, 'video');
     setDlg('done');
   }
 
@@ -323,7 +331,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
   // Saves the project: a second after every change, and again when leaving the editor.
   const persist = () => {
     if (!file || !vol) return;
-    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), words: words ?? undefined, flags, hasVideo: meta.current.hasVideo, updatedAt: Date.now() }).then(() => setAutosaved(true), () => {});
+    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), words: words ?? undefined, flags, hasVideo: meta.current.hasVideo, updatedAt: Date.now(), link: rec.link }).then(() => setAutosaved(true), () => {});
   };
   const persistRef = useRef(persist);
   persistRef.current = persist;
@@ -542,11 +550,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
 
   function download() {
     const text = ['Parts to keep (start, end in seconds)', ...keepSpans(cuts, total).map((k) => `${k.start.toFixed(2)}, ${k.end.toFixed(2)}`), '', 'Parts removed', ...cuts.map((s) => `${s.start.toFixed(2)}, ${s.end.toFixed(2)}`)].join('\n');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
-    a.download = `${(file?.name ?? 'video').replace(/\.[^.]+$/, '')}-cut-list.txt`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    deliver(`${(file?.name ?? 'video').replace(/\.[^.]+$/, '')}-cut-list.txt`, new Blob([text], { type: 'text/plain' }), 'cut-list');
   }
 
   const step = STEPS.find((s) => s * perSec >= 70) ?? STEPS[STEPS.length - 1];
@@ -557,7 +561,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
     <div ref={root} className="space-y-4">
       <ErrorNote text={error} />
       {actions && createPortal(<>
-        <button onClick={() => { persistRef.current(); onBack(); }} className={`${btnGhost} !min-h-[38px] !px-3`}><ArrowLeft size={14} aria-hidden /> Projects</button>
+        <button onClick={() => { persistRef.current(); onBack(); }} className={`${btnGhost} !min-h-[38px] !px-3`}><ArrowLeft size={14} aria-hidden /> {backLabel ?? 'Projects'}</button>
         {file ? (
           <button onClick={() => { persistRef.current(); onChangePart(); }} disabled={busy} className={`${btnGhost} !min-h-[38px] !px-3`}><Crop size={14} aria-hidden /> Change part</button>
         ) : (
@@ -735,7 +739,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
       </section>
 
       {dlg !== 'closed' && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onKeyDown={(e) => e.key === 'Escape' && dlg !== 'running' && setDlg('closed')}>
+        <div className="fixed inset-0 z-[75] grid place-items-center bg-black/40 p-4" onKeyDown={(e) => e.key === 'Escape' && dlg !== 'running' && setDlg('closed')}>
           <div role="dialog" aria-modal="true" aria-labelledby="export-title" className={`${card} w-full max-w-md p-6 shadow-xl`}>
             <h2 id="export-title" className="text-lg font-semibold">
               {dlg === 'confirm' ? 'Export edited video' : dlg === 'running' ? 'Exporting…' : dlg === 'done' ? 'Export finished' : 'Export did not finish'}
