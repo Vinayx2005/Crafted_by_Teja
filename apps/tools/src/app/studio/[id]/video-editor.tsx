@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  CheckCircle2, Clock, Keyboard, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
+  CheckCircle2, Clock, Keyboard, FolderOpen, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
   MessageSquare, MessageSquarePlus, Minus, Music, Play, Plug, Plus, RefreshCw, Scissors, Send, Sparkles, Square, Unlock, Upload, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { btn, btnGhost, card, ErrorNote, field, label, Spinner, useConfirm } from '../ui';
@@ -44,30 +44,34 @@ function useBridge() {
   const [conn, setConn] = useState<Conn>('checking');
   const [error, setError] = useState('');
 
-  const check = useCallback(async (t: string) => {
+  // Connects by itself: the bridge hands its token to Studio pages (GET /api/pair), and this
+  // browser keeps it. Nothing to copy or paste.
+  const check = useCallback(async (saved: string) => {
     setConn('checking');
     try {
       await fetch(`${BRIDGE}/api/ping`).then((r) => { if (!r.ok) throw new Error(); });
     } catch {
       return setConn('offline');
     }
-    if (!t) return setConn('token');
-    const r = await fetch(`${BRIDGE}/api/health`, { headers: { 'X-Editor-Token': t } }).catch(() => null);
-    if (r?.ok) { setError(''); setConn('ok'); } else { setError(r?.status === 401 ? 'That token does not match. Copy it again from the bridge window.' : ''); setConn('token'); }
+    const works = async (t: string) => !!t && !!(await fetch(`${BRIDGE}/api/health`, { headers: { 'X-Editor-Token': t } }).catch(() => null))?.ok;
+    let t = saved;
+    if (!(await works(t))) {
+      const r = await fetch(`${BRIDGE}/api/pair`).catch(() => null);
+      const j = r?.ok ? await r.json().catch(() => null) : null;
+      t = j?.token ?? '';
+      if (!(await works(t))) { setError('This page could not connect to the editor on this PC. Restart the editor and try again.'); return setConn('token'); }
+      try { localStorage.setItem(TOKEN_KEY, t); } catch {}
+    }
+    setTokenState(t);
+    setError('');
+    setConn('ok');
   }, []);
 
   useEffect(() => {
     let t = '';
     try { t = localStorage.getItem(TOKEN_KEY) ?? ''; } catch {}
-    setTokenState(t);
     check(t);
   }, [check]);
-
-  const setToken = (t: string) => {
-    try { localStorage.setItem(TOKEN_KEY, t); } catch {}
-    setTokenState(t);
-    check(t);
-  };
 
   const call = useCallback(async <T,>(path: string, body?: unknown): Promise<T> => {
     const r = await fetch(`${BRIDGE}${path}`, {
@@ -83,7 +87,7 @@ function useBridge() {
   const fileUrl = useCallback((id: string, path: string, download = false) =>
     `${BRIDGE}/api/p/file?id=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}&t=${encodeURIComponent(token)}${download ? '&download=1' : ''}`, [token]);
 
-  return { token, conn, error, check: () => check(token), setToken, call, fileUrl };
+  return { token, conn, error, check: () => check(token), call, fileUrl };
 }
 type Bridge = ReturnType<typeof useBridge>;
 
@@ -92,8 +96,18 @@ export default function VideoEditor() {
   const bridge = useBridge();
   if (bridge.conn === 'checking') return <p className="text-st-mute text-sm flex items-center gap-2"><Spinner /> Looking for the editor on this PC…</p>;
   if (bridge.conn === 'offline') return <Offline onRetry={bridge.check} />;
-  if (bridge.conn === 'token') return <TokenForm error={bridge.error} onSave={bridge.setToken} />;
+  if (bridge.conn === 'token') return <NoConnect error={bridge.error} onRetry={bridge.check} />;
   return <Editor bridge={bridge} />;
+}
+
+function NoConnect({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <section className={`${card} p-6 max-w-xl space-y-3`}>
+      <h2 className="font-semibold">Could not connect</h2>
+      <p className="text-sm text-st-mute leading-relaxed">{error} Close the Video Editor window on your PC, start it again, then press Try again.</p>
+      <button onClick={onRetry} className={btn}><RefreshCw size={15} aria-hidden /> Try again</button>
+    </section>
+  );
 }
 
 function Offline({ onRetry }: { onRetry: () => void }) {
@@ -101,30 +115,54 @@ function Offline({ onRetry }: { onRetry: () => void }) {
     <section className={`${card} p-6 max-w-2xl`}>
       <div className="flex items-center gap-2"><Plug size={18} className="text-18-orange" aria-hidden /><h2 className="font-semibold">Start the editor on your PC</h2></div>
       <p className="text-sm text-st-mute mt-2 leading-relaxed">
-        The Video Editor drives the editing set-up in <code className="text-st-ink">D:\Editing</code> (Remotion, FFmpeg, Whisper and your editing skills). It needs the small editor bridge running on that PC, and this page open in a browser on the same PC.
+        The Video Editor edits on your own PC, so a small helper has to be running there. Open this page on that PC.
       </p>
       <ol className="mt-4 space-y-2 text-sm text-st-ink list-decimal pl-5">
-        <li>Double-click <code>D:\Editing\editor-bridge\start.cmd</code>, or run <code className="bg-st-surface px-1.5 py-0.5 rounded">node D:\Editing\editor-bridge\server.mjs</code>.</li>
-        <li>Keep that window open while you edit.</li>
+        <li>Double-click <b>start.cmd</b> in <code>D:\Editing\editor-bridge</code>.</li>
+        <li>Leave the window that opens running, then press <b>Try again</b>. The page connects by itself.</li>
       </ol>
       <button onClick={onRetry} className={`${btn} mt-5`}><RefreshCw size={15} aria-hidden /> Try again</button>
     </section>
   );
 }
 
-function TokenForm({ error, onSave }: { error: string; onSave: (t: string) => void }) {
-  const [t, setT] = useState('');
+// Open folder: the bridge shows the normal Windows "Select folder" window on this PC and
+// opens the chosen folder as a project (linked in, nothing copied).
+function OpenFolder({ bridge, onOpened, big = false }: { bridge: Bridge; onOpened: (id: string) => void; big?: boolean }) {
+  const [waiting, setWaiting] = useState(false);
+  const [error, setError] = useState('');
+  async function open() {
+    setError('');
+    setWaiting(true);
+    try {
+      const r = await bridge.call<{ id?: string; cancelled?: boolean }>('/api/open-folder', {});
+      if (r.id) onOpened(r.id);
+    } catch (e) { setError((e as Error).message); }
+    finally { setWaiting(false); }
+  }
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (t.trim()) onSave(t.trim()); }} className={`${card} p-6 max-w-xl space-y-3`}>
-      <h2 className="font-semibold">Connect to the editor</h2>
-      <p className="text-sm text-st-mute leading-relaxed">The editor is running. Paste its token once: it is shown in the bridge window, and saved in <code className="text-st-ink">D:\Editing\editor-bridge\token.txt</code>. This browser remembers it.</p>
+    <span className="inline-flex flex-col gap-1">
+      <button onClick={open} disabled={waiting} className={big ? btn : btnGhost} title="Open a video project folder from this PC">
+        {waiting ? <Spinner /> : <FolderOpen size={15} aria-hidden />} {waiting ? 'Choose a folder…' : 'Open folder'}
+      </button>
+      {waiting && <span className="text-[11px] text-st-mute">Pick the folder in the window that opened. If you don&apos;t see it, check the taskbar.</span>}
+      {error && <span className="text-[11px] text-red-700 max-w-xs">{error}</span>}
+    </span>
+  );
+}
+
+function Welcome({ projects, bridge, onOpened }: { projects: Project[]; bridge: Bridge; onOpened: (id: string) => void }) {
+  return (
+    <section className={`${card} p-6 max-w-2xl space-y-4`}>
       <div>
-        <label className={label} htmlFor="editor-token">Editor token</label>
-        <input id="editor-token" value={t} onChange={(e) => setT(e.target.value)} className={field} autoComplete="off" spellCheck={false} />
+        <h2 className="font-semibold">Open a video</h2>
+        <p className="text-sm text-st-mute mt-1 leading-relaxed">Choose the folder on this PC that holds your footage. The editor works on it where it is: nothing is copied or uploaded. It adds <code>raw</code>, <code>work</code> and <code>out</code> folders inside for the edit.</p>
       </div>
-      <ErrorNote text={error} />
-      <button className={btn} disabled={!t.trim()}>Connect</button>
-    </form>
+      <div className="flex flex-wrap items-start gap-2">
+        <OpenFolder big bridge={bridge} onOpened={onOpened} />
+        <NewProject projects={projects} bridge={bridge} onCreated={onOpened} />
+      </div>
+    </section>
   );
 }
 
@@ -160,7 +198,7 @@ function Editor({ bridge }: { bridge: Bridge }) {
       <ErrorNote text={error} />
       {selected && projects.some((p) => p.id === selected)
         ? <Workspace key={selected} id={selected} bridge={bridge} projects={projects} busy={busy} onSelect={setSelected} onChanged={load} />
-        : !error && <NewProject projects={projects} bridge={bridge} onCreated={(id) => { load(); setSelected(id); }} open />}
+        : !error && <Welcome projects={projects} bridge={bridge} onOpened={(id) => { load(); setSelected(id); }} />}
     </div>
   );
 }
@@ -458,6 +496,7 @@ function Workspace({ id, bridge, projects, busy, onSelect, onChanged }: { id: st
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <ProjectPicker projects={projects} selected={id} busy={busy} onSelect={onSelect} />
+        <OpenFolder bridge={bridge} onOpened={(nid) => { onChanged(); onSelect(nid); }} />
         <NewProject projects={projects} bridge={bridge} onCreated={(nid) => { onChanged(); onSelect(nid); }} />
         <ExportButton id={id} bridge={bridge} onDone={refresh}
           onPlay={(p) => setView({ kind: 'video', path: p, name: p.split('/').pop() || p, play: true })} />

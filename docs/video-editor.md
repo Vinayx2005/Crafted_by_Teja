@@ -24,8 +24,9 @@ The editor uses exactly the same skills as editing in chat. The page only sends 
 
 1. **Start the bridge:** double-click `D:\Editing\editor-bridge\start.cmd` and keep that window open while you edit. (Or run `node D:\Editing\editor-bridge\server.mjs`.)
 2. **Open Studio on the same PC:** go to **Video Editor** in the sidebar.
-3. **Connect once:** paste the editor token. It is shown in the bridge window and saved in `D:\Editing\editor-bridge\token.txt`. The browser remembers it.
-4. **Sign the editor in to Claude once:** press **Sign in with Claude** at the top of the page and finish signing in on the Claude page that opens. The panel turns green by itself. If the sign-in page shows a code, paste it into the box and press **Submit code**.
+3. **It connects by itself:** there is nothing to paste. The bridge gives its access key only to the Studio pages, and the browser remembers it.
+4. **Open your video:** press **Open folder** and choose the folder on your PC that holds the footage, in the normal Windows "Select folder" window (see *Opening a folder* below).
+5. **Sign the editor in to Claude once:** press **Sign in with Claude** at the top of the page and finish signing in on the Claude page that opens. The panel turns green by itself. If the sign-in page shows a code, paste it into the box and press **Submit code**.
 
 If the bridge is not running, the page shows **"Start the editor on your PC"** with these steps.
 
@@ -56,8 +57,23 @@ The page is laid out like a video editor:
 
 ### Toolbar (above the editor)
 - **Video picker:** every project in `D:\Editing\projects`, including grouped ones (for example *90 day mentroship videos → Orientation*). The video being edited right now is marked "• editing".
-- **New video:** creates a project with `raw/`, `work/` and `out/` folders, optionally inside an existing group.
+- **Open folder:** opens a video folder from anywhere on this PC (see below).
+- **New video:** creates an empty project with `raw/`, `work/` and `out/` folders, optionally inside an existing group.
 - **Export:** renders the video to a file (see below).
+
+### Opening a folder
+**Open folder** works like opening a project in any other editor:
+1. The standard Windows **Select folder** window opens. If you don't see it, check the taskbar.
+2. Choose the folder that holds the video's footage, for example `D:\Videos\My vlog`, and press **Open folder**.
+3. It opens straight away and appears in the video picker from then on.
+
+What happens behind the scenes:
+- **Nothing is copied or moved.** The folder is linked into `D:\Editing\projects\<folder name>` with a Windows folder link (a junction). Every tool, skill and render sees it as a normal project, while the files stay where they are.
+- **Folders added inside it:** `raw\`, `work\` and `out\` are created when missing. The edit's working files go in `work\`, and outputs (storyboards, previews, finals, .srt files) go in `out\`.
+- **Footage:** videos and audio already sitting in the folder itself show under **Footage**, next to anything in `raw\`.
+- **Same folder again:** opening a folder that's already open selects it. A folder inside `D:\Editing\projects` opens directly, without a link.
+- **Refused:** a whole drive, and `D:\Editing` itself.
+- **Removing it from the list:** delete the link `D:\Editing\projects\<folder name>`. In File Explorer it has a shortcut arrow. Deleting the link leaves your folder and footage untouched.
 
 ### Export
 **Export** renders the current edit straight from `work/edit.json` (or `work/promo.json`). It uses the same Remotion composition and asset staging as `tools/render.py`, with no AI turn involved, so it needs no Claude sign-in. Pick one of two outputs:
@@ -210,8 +226,8 @@ The skill's rules apply throughout: SFX need your approval, the brand and whiteb
 
 - **Only on the editing PC:** the bridge listens on `127.0.0.1` only. The page works in a browser on that PC (local Studio or tools.craftedbyteja.com), not from a phone or another computer.
 - **Locked down:**
-  - Every request needs the editor token in `D:\Editing\editor-bridge\token.txt`.
-  - Only Studio's addresses can call the bridge from a browser.
+  - Every request needs the editor's access key (`D:\Editing\editor-bridge\token.txt`). The page gets it automatically from `GET /api/pair`, which answers only Studio's addresses: browsers always send the page's address with the request, and a page cannot fake it.
+  - Only Studio's addresses can call the bridge from a browser, and the bridge only answers requests addressed to `127.0.0.1` / `localhost`, which blocks DNS-rebinding tricks.
   - Files are served only from a project's `raw/`, `work/` and `out/` folders.
 - **It works without asking permission:** nobody is at a terminal to approve each step, so the editor can run Python, FFmpeg and Remotion and edit files in `D:\Editing` freely, the same as editing in chat.
 - **Separate sign-in:** the editor's Claude Code has its own Claude sign-in, managed from the panel at the top of the page.
@@ -223,7 +239,8 @@ The skill's rules apply throughout: SFX need your approval, the brand and whiteb
 | You see | Do this |
 |---|---|
 | "Start the editor on your PC" | Double-click `D:\Editing\editor-bridge\start.cmd`, then **Try again** |
-| "Connect to the editor" / "That token does not match" | Copy the token again from the bridge window or `token.txt` |
+| "Could not connect" | Close the bridge window, double-click `start.cmd` again, then **Try again** |
+| The folder window doesn't appear | Check the taskbar. It can open behind the browser |
 | "The editor is not signed in to Claude yet" | Use **Sign in with Claude** at the top of the page |
 | "The editor is busy with …" | Another video is being edited; wait for it, or open that video and press **Stop** |
 | New files don't appear | Press **Refresh** in the project header |
@@ -240,11 +257,12 @@ The skill's rules apply throughout: SFX need your approval, the brand and whiteb
 | Section switch | `apps/tools/src/app/studio/[id]/page.tsx` |
 | Bridge server | `D:\Editing\editor-bridge\server.mjs` |
 | Start script | `D:\Editing\editor-bridge\start.cmd` |
-| Editor token | `D:\Editing\editor-bridge\token.txt` |
+| Access key (handed to Studio automatically) | `D:\Editing\editor-bridge\token.txt` |
+| Folder window script | `D:\Editing\editor-bridge\pick-folder.ps1` |
 | Per-video chat and session | `D:\Editing\projects\<video>\work\editor\` |
 
 ### Bridge API (for reference)
-All routes are under `http://127.0.0.1:4317/api` and need the `X-Editor-Token` header (or `?t=` for media links). The exception is `/ping`.
+All routes are under `http://127.0.0.1:4317/api` and need the `X-Editor-Token` header (or `?t=` for media links). The exceptions are `/ping` and `/pair`, which Studio uses to fetch the key.
 
 | Route | Purpose |
 |---|---|
@@ -257,5 +275,7 @@ All routes are under `http://127.0.0.1:4317/api` and need the `X-Editor-Token` h
 | `GET /p/chat?id=` · `GET /p/stream?id=` | Chat history, and live updates (server-sent events) |
 | `POST /p/message?id=` · `POST /p/stop?id=` · `POST /p/new-chat?id=` | Send a message, stop the job, start a new conversation |
 | `POST /p/upload?id=&name=` · `POST /p/add-local?id=` | Add raw footage |
+| `GET /pair` | The access key, only for Studio's addresses (automatic connect) |
+| `POST /open-folder` `{path?}` | Show the Windows folder window (or use a typed path) and open that folder as a project |
 | `GET /p/export?id=` · `POST /p/export?id=` `{mode: preview\|final\|cancel}` | Export status (existing files, running job), start an export, cancel it |
 | `GET /p/file?id=&path=` | Serve a file from `raw/`, `work/` or `out/` (supports seeking) |
