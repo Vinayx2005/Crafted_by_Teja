@@ -136,20 +136,20 @@ export async function audioTrack(src: Blob): Promise<AudioTrack> {
   throw new Error('This video has no sound.');
 }
 
-/** 0-100 volume readings, one per 20 ms, read piece by piece. Throws when this file or browser cannot do it. */
-export async function streamLevels(src: Blob, onProgress?: (done: number) => void, range?: Span | null): Promise<number[]> {
+/**
+ * Decodes the sound of the chosen part piece by piece and hands each piece over as mono samples.
+ * Throws when this file or browser cannot do it (the caller then falls back to reading the file whole).
+ */
+export async function eachSound(src: Blob, range: Span | null | undefined, onMono: (mono: Float32Array, rate: number) => void, onProgress?: (done: number) => void) {
   if (typeof AudioDecoder === 'undefined') throw new Error('This browser cannot decode sound in pieces. Use Chrome or Edge.');
   const t = await audioTrack(src);
   const config: AudioDecoderConfig = { codec: t.codec, sampleRate: t.sampleRate, numberOfChannels: t.channels, ...(t.config ? { description: t.config } : {}) };
   if (!(await AudioDecoder.isConfigSupported(config)).supported) throw new Error('This browser cannot decode the sound of this video.');
 
-  const rms: number[] = [];
-  let win = 0, acc = 0, cnt = 0;
   let failed: unknown = null;
   let plane = new Float32Array(0);
   const dec = new AudioDecoder({
     output: (a) => {
-      win ||= Math.max(1, Math.round(a.sampleRate * WINDOW));
       const n = a.numberOfFrames;
       const ch = a.numberOfChannels;
       if (plane.length < n) plane = new Float32Array(n);
@@ -158,11 +158,9 @@ export async function streamLevels(src: Blob, onProgress?: (done: number) => voi
         a.copyTo(plane.subarray(0, n), { planeIndex: c, format: 'f32-planar' });
         for (let i = 0; i < n; i++) mono[i] += plane[i] / ch;
       }
+      const rate = a.sampleRate;
       a.close();
-      for (let i = 0; i < n; i++) {
-        acc += mono[i] * mono[i];
-        if (++cnt === win) { rms.push(Math.sqrt(acc / cnt)); acc = 0; cnt = 0; }
-      }
+      onMono(mono, rate);
     },
     error: (e) => { failed = e; },
   });
@@ -189,9 +187,62 @@ export async function streamLevels(src: Blob, onProgress?: (done: number) => voi
   if (!failed) await dec.flush().catch((e) => { failed = e; });
   dec.close();
   if (failed) throw failed instanceof Error ? failed : new Error('The sound could not be decoded.');
+}
+
+/** 0-100 volume readings, one per 20 ms, read piece by piece. Throws when this file or browser cannot do it. */
+export async function streamLevels(src: Blob, onProgress?: (done: number) => void, range?: Span | null): Promise<number[]> {
+  const rms: number[] = [];
+  let win = 0, acc = 0, cnt = 0;
+  await eachSound(src, range, (mono, rate) => {
+    win ||= Math.max(1, Math.round(rate * WINDOW));
+    for (let i = 0; i < mono.length; i++) {
+      acc += mono[i] * mono[i];
+      if (++cnt === win) { rms.push(Math.sqrt(acc / cnt)); acc = 0; cnt = 0; }
+    }
+  }, onProgress);
   if (cnt) rms.push(Math.sqrt(acc / cnt));
   if (!rms.length) throw new Error('No sound was found in this video.');
   // Exactly one reading per 20 ms of the part, so the timeline matches the video.
-  if (Number.isFinite(to)) rms.length = Math.min(rms.length, Math.round((to - from) / WINDOW));
+  if (range) rms.length = Math.min(rms.length, Math.round((range.end - range.start) / WINDOW));
   return toLevels(rms);
+}
+
+/**
+ * Turns sound at any rate into sound at `out` samples a second, piece by piece. Each output sample is the
+ * average of the input samples it covers, which also keeps high pitches from turning into noise.
+ */
+export class Resampler {
+  private acc = 0;
+  private n = 0;
+  private pos = 0;
+  private buf: Float32Array;
+  length = 0;
+  constructor(private out: number, expected = 0) {
+    this.buf = new Float32Array(Math.max(1024, expected));
+  }
+  push(mono: Float32Array, rate: number) {
+    const step = rate / this.out; // input samples per output sample
+    for (let i = 0; i < mono.length; i++) {
+      this.acc += mono[i];
+      this.n++;
+      if (++this.pos >= step) {
+        if (this.length === this.buf.length) { const b = new Float32Array(this.buf.length * 2); b.set(this.buf); this.buf = b; }
+        this.buf[this.length++] = this.acc / this.n;
+        this.acc = 0;
+        this.n = 0;
+        this.pos -= step;
+      }
+    }
+  }
+  result() {
+    return this.buf.subarray(0, this.length);
+  }
+}
+
+/** The chosen part's sound as 16,000 mono samples a second, which is what Whisper listens to. */
+export async function partAudio16k(src: Blob, range: Span | null | undefined, onProgress?: (done: number) => void): Promise<Float32Array> {
+  // ponytail: holds the whole part in memory (about 230 MB for an hour); feed Whisper while decoding if parts get longer.
+  const r = new Resampler(16000, range ? Math.ceil((range.end - range.start) * 16000) + 16000 : 0);
+  await eachSound(src, range, (mono, rate) => r.push(mono, rate), onProgress);
+  return r.result();
 }

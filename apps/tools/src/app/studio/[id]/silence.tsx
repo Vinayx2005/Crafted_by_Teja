@@ -6,16 +6,20 @@
 // Everything runs in the browser; the video is never uploaded.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Crop, Download, Eye, EyeOff, Film, FolderOpen, Save, Scissors, Undo2, Upload, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, Crop, Download, Eye, EyeOff, Film, FolderOpen, Play, Save, Scissors, ScanSearch, SlidersHorizontal, Undo2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { putProject, saveVideo, type Rec } from '@/lib/studio/silence-projects';
 import { flattenMp4 } from '@/lib/studio/mp4-flatten';
 import { streamLevels } from '@/lib/studio/audio-levels';
+import { api, errorText } from '@/lib/studio/client';
+import { transcribe } from '@/lib/studio/transcribe';
+import { KIND_LABEL, localFlags, mergeFlags, reviewFlags, snapFlags, type Flag, type ReviewItem, type Word } from '@/lib/studio/unwanted';
 
 // Files read whole (not MP4 or MOV) must stay under this, or the browser runs out of memory.
 const WHOLE_FILE_LIMIT = 400 * 1048576;
 import { clock, cutSpans, editedTime, findSilences, hopTarget, keepSpans, levels, parseProject, segments, type Override, type Project, type Span } from '@/lib/studio/silence';
-import { btn, btnGhost, card, ErrorNote, Spinner } from '../ui';
+import { btn, btnGhost, card, ErrorNote, Popover, Spinner } from '../ui';
 
 // MP4 (H.264 and AAC) when this browser can record it, otherwise WebM.
 const MIMES = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
@@ -78,6 +82,13 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
   const [duration, setDuration] = useState(0);
   const [notice, setNotice] = useState('');
   const [autosaved, setAutosaved] = useState(false);
+  // Unwanted parts: what was said (Whisper) and the highlighted bits (fillers, fumbles, repeats).
+  const { id: brandId } = useParams<{ id: string }>();
+  const [words, setWords] = useState<Word[] | null>(rec.words ?? null);
+  const [flags, setFlags] = useState<Flag[]>(rec.flags ?? []);
+  const [finding, setFinding] = useState<{ stage: string; pct: number } | null>(null);
+  const [findNote, setFindNote] = useState('');
+  const stopAt = useRef<number | null>(null); // "Play" on a highlight stops shortly after it
   const [exp, setExp] = useState<{ pct: number; elapsed: number; left: number } | null>(null); // export progress
   const [dlg, setDlg] = useState<'closed' | 'confirm' | 'running' | 'done' | 'failed'>('closed');
   const [why, setWhy] = useState('');
@@ -111,7 +122,8 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setViewW(el.clientWidth));
+    // A hidden page measures 0 wide; keep the last real width instead (0 drew the whole timeline at 0 px).
+    const ro = new ResizeObserver(() => { if (el.clientWidth > 0) setViewW(el.clientWidth); });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -311,7 +323,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
   // Saves the project: a second after every change, and again when leaving the editor.
   const persist = () => {
     if (!file || !vol) return;
-    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), hasVideo: meta.current.hasVideo, updatedAt: Date.now() }).then(() => setAutosaved(true), () => {});
+    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), words: words ?? undefined, flags, hasVideo: meta.current.hasVideo, updatedAt: Date.now() }).then(() => setAutosaved(true), () => {});
   };
   const persistRef = useRef(persist);
   persistRef.current = persist;
@@ -319,7 +331,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
     if (!file || !vol) return;
     const id = setTimeout(() => persistRef.current(), 1000);
     return () => clearTimeout(id);
-  }, [file, vol, threshold, minSilence, buffer, edits]);
+  }, [file, vol, threshold, minSilence, buffer, edits, words, flags]);
   useEffect(() => () => persistRef.current(), []);
 
   const maxZoom = zoomLimit(total, viewW);
@@ -337,6 +349,52 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
     setEdits(prev);
   };
   const choose = (hide: boolean) => current && change({ ...edits, overrides: [...edits.overrides, { start: current.start, end: current.end, hide }] });
+  // Finds unwanted parts: Whisper writes down every word with its time (in this browser), simple checks
+  // catch fillers and doubled words, and Gemini points at repeated takes and fumbles. Nothing is cut.
+  async function findUnwanted() {
+    if (!file || !vol || finding) return;
+    setFindNote('');
+    try {
+      const ws = words ?? (await transcribe(file, rec.range, (stage, pct) => setFinding({ stage, pct: Math.round(pct) })));
+      setWords(ws);
+      setFinding({ stage: 'Checking for repeats and fumbles', pct: 100 });
+      let ai: Flag[] = [];
+      if (ws.length) {
+        try {
+          ai = reviewFlags((await api<{ items: ReviewItem[] }>('unwanted', { brandId, words: ws.map((x) => x.w.trim()) })).items, ws);
+        } catch (e) {
+          setFindNote(`Repeats and fumbles were not checked: ${errorText(e)} Fillers and doubled words are still shown.`);
+        }
+      }
+      const found = snapFlags(mergeFlags([...localFlags(ws, vol, threshold), ...ai]), vol);
+      // Parts you chose to ignore stay ignored when you look again.
+      const was = (f: Flag) => flags.find((o) => o.ignored && Math.abs(o.start - f.start) < 0.15 && Math.abs(o.end - f.end) < 0.15);
+      setFlags(found.map((f) => (was(f) ? { ...f, ignored: true } : f)));
+      if (!ws.length) setFindNote('No speech was heard in this part.');
+    } catch (e) {
+      setFindNote(errorText(e));
+    }
+    setFinding(null);
+  }
+  // A highlight counts as removed once (nearly) all of it is cut, not when its middle happens to sit in a silence.
+  const isCut = (f: Flag) => cuts.reduce((n, c) => n + Math.max(0, Math.min(f.end, c.end) - Math.max(f.start, c.start)), 0) >= 0.9 * (f.end - f.start);
+  const setFlagsHidden = (list: Flag[], hide: boolean) => list.length && change({
+    splits: [...edits.splits, ...list.flatMap((f) => [f.start, f.end])],
+    overrides: [...edits.overrides, ...list.map((f) => ({ start: f.start, end: f.end, hide }))],
+  });
+  const removeFlags = (list: Flag[]) => setFlagsHidden(list, true);
+  const ignoreFlag = (f: Flag) => setFlags((all) => all.map((x) => (x === f ? { ...x, ignored: true } : x)));
+  function playFlag(f: Flag) {
+    const v = video.current;
+    if (!v) return;
+    setEdited(false); // so the highlight itself is heard, even if it is already removed
+    v.currentTime = off + Math.max(0, f.start - 0.5);
+    stopAt.current = off + f.end + 0.5;
+    v.play().catch(() => {});
+  }
+  const shown = flags.filter((f) => !f.ignored);
+  const open = shown.filter((f) => !isCut(f));
+
   function cutHere() {
     const t = (video.current?.currentTime ?? off) - off;
     if (!vol || t <= 0.05 || t >= total - 0.05 || segs.some((s) => Math.abs(s.start - t) < 0.05)) return;
@@ -398,6 +456,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
         if (clockText.current) clockText.current.textContent = `${clock(editedTime(t, cuts))} / ${clock(total - removed)}`;
         const el = scroller.current;
         if (el && !v.paused && (t * perSec < el.scrollLeft || t * perSec > el.scrollLeft + el.clientWidth)) el.scrollLeft = t * perSec - 40;
+        if (stopAt.current != null && !v.paused && v.currentTime >= stopAt.current) { v.pause(); stopAt.current = null; }
         if (edited && !v.paused) hop(v, cuts, off);
       }
       raf = requestAnimationFrame(tick);
@@ -492,48 +551,60 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
 
   const step = STEPS.find((s) => s * perSec >= 70) ?? STEPS[STEPS.length - 1];
   const ticks = total && Number.isFinite(total) ? Array.from({ length: Math.floor(total / step) + 1 }, (_, i) => i * step) : [];
-  const tool = (_disabled: boolean) => `${btnGhost} !px-3`;
+  const tool = (_disabled: boolean) => `${btnGhost} !min-h-[38px] !px-3`; // one size for every button, as in the header
 
   return (
     <div ref={root} className="space-y-4">
       <ErrorNote text={error} />
-      <div className="grid lg:grid-cols-[320px_1fr] gap-4">
-        <section className={`${card} p-5 space-y-5`} aria-label="Settings">
-          <h2 className="font-semibold">Settings</h2>
-          {file && <p className="text-xs text-st-mute truncate">{file.name}</p>}
-          <Slider label="Threshold" value={threshold} min={1} max={60} step={1} unit="%" onChange={setThreshold} />
-          <Slider label="Minimum Silence" value={minSilence} min={0.1} max={3} step={0.1} unit="s" onChange={(n) => setMinSilence(Math.round(n * 10) / 10)} />
-          <Slider label="Increase Buffer" value={buffer} min={0} max={0.5} step={0.05} unit="s" onChange={(n) => setBuffer(Math.round(n * 100) / 100)} />
-          <p className="truncate text-xs text-st-mute" title="Threshold: anything quieter than this counts as silence. Minimum Silence: a pause must last this long. Buffer: a little sound kept on both sides so words are not clipped.">Below Threshold for Minimum Silence = cut.</p>
-        </section>
+      {actions && createPortal(<>
+        <button onClick={() => { persistRef.current(); onBack(); }} className={`${btnGhost} !min-h-[38px] !px-3`}><ArrowLeft size={14} aria-hidden /> Projects</button>
+        {file ? (
+          <button onClick={() => { persistRef.current(); onChangePart(); }} disabled={busy} className={`${btnGhost} !min-h-[38px] !px-3`}><Crop size={14} aria-hidden /> Change part</button>
+        ) : (
+          <label className={`${btnGhost} !min-h-[38px] !px-3 cursor-pointer`}>
+            <Upload size={14} aria-hidden /> Choose video
+            <input type="file" accept="video/*,audio/*" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+          </label>
+        )}
+        <button onClick={() => start()} disabled={!file || busy} className={`${btn} !py-2 !min-h-[38px] !px-3`}>
+          {busy ? <Spinner /> : <Scissors size={14} aria-hidden />} {busy ? `Listening… ${listened}%` : vol ? 'Restart' : 'Start'}
+        </button>
+        <label className={`${btnGhost} !min-h-[38px] !px-3 cursor-pointer`}>
+          <FolderOpen size={14} aria-hidden /> Open project
+          <input type="file" accept=".json,application/json" className="sr-only" onChange={(e) => { openProject(e.target.files?.[0]); e.target.value = ''; }} />
+        </label>
+        {/* The three silence settings, in a pop-up: it stays open while you drag, so the timeline updates as you watch. */}
+        <Popover
+          align="right"
+          trigger={({ open: isOpen, toggle }) => (
+            <button onClick={toggle} aria-haspopup="dialog" aria-expanded={isOpen} className={`${btnGhost} !min-h-[38px] !px-3`}><SlidersHorizontal size={14} aria-hidden /> Settings</button>
+          )}
+        >
+          {() => (
+            <div role="dialog" aria-label="Silence settings" className="w-80 space-y-5 p-3.5">
+              <div>
+                <h3 className="font-semibold">Settings</h3>
+                {file && <p className="truncate text-xs text-st-mute">{file.name}</p>}
+              </div>
+              <Slider label="Threshold" value={threshold} min={1} max={60} step={1} unit="%" onChange={setThreshold} />
+              <Slider label="Minimum Silence" value={minSilence} min={0.1} max={3} step={0.1} unit="s" onChange={(n) => setMinSilence(Math.round(n * 10) / 10)} />
+              <Slider label="Increase Buffer" value={buffer} min={0} max={0.5} step={0.05} unit="s" onChange={(n) => setBuffer(Math.round(n * 100) / 100)} />
+              <p className="text-xs text-st-mute">Threshold: anything quieter than this counts as silence. Minimum Silence: a pause must last this long. Buffer: a little sound kept on both sides so words are not clipped.</p>
+            </div>
+          )}
+        </Popover>
+        <button onClick={saveProject} disabled={!file} className={`${btnGhost} !min-h-[38px] !px-3`}><Save size={14} aria-hidden /> Save project</button>
+        <button onClick={openExport} disabled={!vol || exp !== null} className={`${btn} !py-2 !min-h-[38px] !px-3 !bg-st-ink hover:!bg-black`}>
+          {exp === null ? <Film size={14} aria-hidden /> : <Spinner />} {exp === null ? 'Export' : `Exporting ${exp.pct}%`}
+        </button>
+      </>, actions)}
+      {notice && <p role="status" className="text-sm text-st-mute text-right">{notice}</p>}
 
-        <div className="space-y-3">
-          {actions && createPortal(<>
-            <button onClick={() => { persistRef.current(); onBack(); }} className={`${btnGhost} !min-h-[36px] !px-3`}><ArrowLeft size={14} aria-hidden /> Projects</button>
-            {file ? (
-              <button onClick={() => { persistRef.current(); onChangePart(); }} disabled={busy} className={`${btnGhost} !min-h-[36px] !px-3`}><Crop size={14} aria-hidden /> Change part</button>
-            ) : (
-              <label className={`${btnGhost} !min-h-[36px] !px-3 cursor-pointer`}>
-                <Upload size={14} aria-hidden /> Choose video
-                <input type="file" accept="video/*,audio/*" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
-              </label>
-            )}
-            <button onClick={() => start()} disabled={!file || busy} className={`${btn} !min-h-[36px] !px-3`}>
-              {busy ? <Spinner /> : <Scissors size={14} aria-hidden />} {busy ? `Listening… ${listened}%` : vol ? 'Restart' : 'Start'}
-            </button>
-            <label className={`${btnGhost} !min-h-[36px] !px-3 cursor-pointer`}>
-              <FolderOpen size={14} aria-hidden /> Open project
-              <input type="file" accept=".json,application/json" className="sr-only" onChange={(e) => { openProject(e.target.files?.[0]); e.target.value = ''; }} />
-            </label>
-            <button onClick={saveProject} disabled={!file} className={`${btnGhost} !min-h-[36px] !px-3`}><Save size={14} aria-hidden /> Save project</button>
-            <button onClick={openExport} disabled={!vol || exp !== null} className={`${btn} !min-h-[36px] !px-3 !bg-st-ink hover:!bg-black`}>
-              {exp === null ? <Film size={14} aria-hidden /> : <Spinner />} {exp === null ? 'Export' : `Exporting ${exp.pct}%`}
-            </button>
-          </>, actions)}
-          {notice && <p role="status" className="text-sm text-st-mute text-right">{notice}</p>}
-        <section className={`${card} p-4`}>
+      {/* Unwanted parts on the left (stretching, taking the video's height and scrolling), the video on the right. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(340px,1fr)_auto]">
+        <section className={`${card} p-4 lg:max-w-[60vw]`} aria-label="Video">
           {url ? (
-            <video ref={video} src={url} controls onLoadedMetadata={(e) => { setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0); if (off) e.currentTarget.currentTime = off; }} className="w-full max-h-[50vh] rounded-lg bg-black" />
+            <video ref={video} src={url} controls onLoadedMetadata={(e) => { setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0); if (off) e.currentTarget.currentTime = off; }} className="mx-auto block max-h-[55vh] w-auto max-w-full rounded-lg bg-black" />
           ) : (
             <div className="aspect-video grid place-items-center rounded-lg bg-st-surface text-sm text-st-mute">Choose a video to begin</div>
           )}
@@ -546,20 +617,67 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
             </div>
           )}
         </section>
-        </div>
+
+        <section className={`${card} relative min-h-[18rem] lg:order-first`} aria-label="Unwanted parts">
+          <div className="flex h-full flex-col p-4 lg:absolute lg:inset-0">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="min-w-0 truncate font-semibold">Unwanted parts</h2>
+              <button onClick={findUnwanted} disabled={!vol || !file || !!finding} className={`${btnGhost} shrink-0 !min-h-[38px] !px-3 !border-red-200 !text-red-700 hover:!bg-red-50`} title="Highlight fillers, fumbles and repeated takes in red (nothing is removed)">
+                {finding ? <Spinner /> : <ScanSearch size={14} aria-hidden />} {finding ? 'Working…' : words ? 'Find again' : 'Find unwanted parts'}
+              </button>
+            </div>
+            {finding && (
+              <div className="mt-3" aria-live="polite">
+                <p className="text-sm">{finding.stage}… <span className="tabular-nums text-st-mute">{finding.pct}%</span></p>
+                <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-st-surface"><div className="h-full rounded-full bg-red-500 transition-[width] duration-300" style={{ width: `${finding.pct}%` }} /></div>
+              </div>
+            )}
+            {findNote && <p className="mt-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{findNote}</p>}
+            {open.some((f) => f.kind === 'filler') && (
+              <button onClick={() => removeFlags(open.filter((f) => f.kind === 'filler'))} className={`${btnGhost} mt-3 !min-h-[38px] !px-3 self-start`}><EyeOff size={14} aria-hidden /> Remove all fillers</button>
+            )}
+            <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
+              {shown.length > 0 ? (
+                <ul className="divide-y divide-st-line">
+                  {shown.map((f) => {
+                    const gone = isCut(f);
+                    return (
+                      <li key={`${f.start}-${f.end}`} className="py-2.5 text-sm">
+                        <div className="flex items-center gap-2">
+                          <span className={`rounded-md px-1.5 py-0.5 text-xs font-semibold ${gone ? 'bg-st-surface text-st-mute' : 'bg-red-100 text-red-800'}`}>{KIND_LABEL[f.kind]}</span>
+                          <span className="tabular-nums text-st-mute">{clock(f.start)}</span>
+                          <span className="ml-auto flex gap-1.5">
+                            <button onClick={() => playFlag(f)} className={`${btnGhost} !min-h-[38px] !px-3`} aria-label={`Play the ${KIND_LABEL[f.kind].toLowerCase()} at ${clock(f.start)}`} title="Play it"><Play size={14} aria-hidden /></button>
+                            {gone ? <button onClick={() => setFlagsHidden([f], false)} className={`${btnGhost} !min-h-[38px] !px-3`} title="Put this part back in the video"><Undo2 size={14} aria-hidden /> Restore</button> : <>
+                              <button onClick={() => removeFlags([f])} className={`${btnGhost} !min-h-[38px] !px-3`}><EyeOff size={14} aria-hidden /> Remove</button>
+                              <button onClick={() => ignoreFlag(f)} className={`${btnGhost} !min-h-[38px] !px-3`} aria-label={`Ignore the ${KIND_LABEL[f.kind].toLowerCase()} at ${clock(f.start)}`}><X size={14} aria-hidden /> Ignore</button>
+                            </>}
+                          </span>
+                        </div>
+                        <p className={`mt-1 ${gone ? 'text-st-mute line-through decoration-st-mute/50' : ''}`}>{f.text && <span className="italic">“{f.text}”</span>} <span className="text-st-mute">{f.why}</span></p>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : !finding && (
+                <p className="pt-2 text-sm text-st-mute">{words ? 'Nothing is highlighted.' : 'Press "Find unwanted parts": Whisper listens to this part in your browser and Gemini points at repeats and fumbles. They are highlighted in red; nothing is removed until you choose.'}</p>
+              )}
+            </div>
+          </div>
+        </section>
       </div>
 
       <section className={`${card} p-4`} aria-label="Timeline">
         <div className="flex flex-wrap items-center gap-2 mb-3">
-          <button onClick={undo} disabled={!history.length} className={tool(!history.length)} aria-label="Undo" title="Undo"><Undo2 size={15} aria-hidden /></button>
-          <button onClick={cutHere} disabled={!vol} className={tool(!vol)} title="Cut the video into two parts at the playhead"><Scissors size={15} aria-hidden /> Cut</button>
-          <button onClick={() => choose(true)} disabled={!current || current.hidden} className={tool(!current)} title="Remove the selected part from the preview (closed eye)"><EyeOff size={15} aria-hidden /> Remove</button>
-          <button onClick={() => choose(false)} disabled={!current || !current.hidden} className={tool(!current)} title="Keep the selected part in the preview (open eye)"><Eye size={15} aria-hidden /> Keep</button>
+          <button onClick={undo} disabled={!history.length} className={tool(!history.length)} aria-label="Undo" title="Undo"><Undo2 size={14} aria-hidden /></button>
+          <button onClick={cutHere} disabled={!vol} className={tool(!vol)} title="Cut the video into two parts at the playhead"><Scissors size={14} aria-hidden /> Cut</button>
+          <button onClick={() => choose(true)} disabled={!current || current.hidden} className={tool(!current)} title="Remove the selected part from the preview (closed eye)"><EyeOff size={14} aria-hidden /> Remove</button>
+          <button onClick={() => choose(false)} disabled={!current || !current.hidden} className={tool(!current)} title="Keep the selected part in the preview (open eye)"><Eye size={14} aria-hidden /> Keep</button>
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => zoomBy(1 / 1.5)} disabled={!vol || zoom <= 1} className={tool(!vol)} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} aria-hidden /></button>
+            <button onClick={() => zoomBy(1 / 1.5)} disabled={!vol || zoom <= 1} className={tool(!vol)} aria-label="Zoom out" title="Zoom out"><ZoomOut size={14} aria-hidden /></button>
             <input type="range" min={1} max={maxZoom} step={0.5} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} onPointerUp={(e) => e.currentTarget.blur()} disabled={!vol} aria-label="Zoom" className="w-28 accent-[#F37335]" />
-            <button onClick={() => zoomBy(1.5)} disabled={!vol || zoom >= maxZoom} className={tool(!vol)} aria-label="Zoom in" title="Zoom in"><ZoomIn size={15} aria-hidden /></button>
-            <button onClick={download} disabled={!vol} className={btnGhost}><Download size={15} aria-hidden /> Cut list</button>
+            <button onClick={() => zoomBy(1.5)} disabled={!vol || zoom >= maxZoom} className={tool(!vol)} aria-label="Zoom in" title="Zoom in"><ZoomIn size={14} aria-hidden /></button>
+            <button onClick={download} disabled={!vol} className={tool(!vol)}><Download size={14} aria-hidden /> Cut list</button>
           </div>
         </div>
         <p className="text-sm mb-2" aria-live="polite">
@@ -594,13 +712,26 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
                   </div>
                 );
               })}
-              <div ref={head} className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none" style={{ left: 0 }} />
+              {open.map((f) => (
+                <button
+                  key={`${f.start}-${f.end}`}
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); playFlag(f); }}
+                  title={`${KIND_LABEL[f.kind]}${f.text ? `: "${f.text}"` : ''}. ${f.why}. Click to hear it.`}
+                  aria-label={`${KIND_LABEL[f.kind]} at ${clock(f.start)}. Play it.`}
+                  className="absolute top-5 bottom-0 overflow-hidden border-x-2 border-red-600 bg-red-500/35 text-left text-[10px] font-semibold leading-tight text-red-900 hover:bg-red-500/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600"
+                  style={{ left: f.start * perSec, width: Math.max(3, (f.end - f.start) * perSec) }}
+                >
+                  {(f.end - f.start) * perSec > 44 && <span className="block truncate px-1 pt-1">{KIND_LABEL[f.kind]}</span>}
+                </button>
+              ))}
+              <div ref={head} className="absolute top-0 bottom-0 w-0.5 bg-sky-600 pointer-events-none" style={{ left: 0 }} />
             </div>
           ) : (
             <div className="grid h-36 place-items-center text-sm text-st-mute">The waveform appears here</div>
           )}
         </div>
-        <p className="text-xs text-st-mute mt-2">Dark parts are removed from the preview. Click the waveform to select a part and jump there, then press Remove or Keep. Cut splits a part at the red line. Shortcuts: Space plays or pauses, the left and right arrows jump to the previous or next kept clip, and Alt + scroll zooms the timeline. Your video stays on your computer.</p>
+        <p className="text-xs text-st-mute mt-2">Dark parts are removed from the preview. Click the waveform to select a part and jump there, then press Remove or Keep. Cut splits a part at the blue line. Red boxes are unwanted parts found for you: click one to hear it. Shortcuts: Space plays or pauses, the left and right arrows jump to the previous or next kept clip, and Alt + scroll zooms the timeline. Your video stays on your computer.</p>
       </section>
 
       {dlg !== 'closed' && (
@@ -621,8 +752,8 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
                 </dl>
                 <p className="mt-4 text-sm text-st-mute">The edited video is recorded as it plays, so the export takes as long as the final video. Keep this tab open and in front. The file is saved to your Downloads when it finishes.</p>
                 <div className="mt-5 flex justify-end gap-2">
-                  <button onClick={() => setDlg('closed')} className={btnGhost}>Cancel</button>
-                  <button onClick={exportVideo} autoFocus className={btn}><Film size={15} aria-hidden /> Start export</button>
+                  <button onClick={() => setDlg('closed')} className={`${btnGhost} !min-h-[38px] !px-3`}>Cancel</button>
+                  <button onClick={exportVideo} autoFocus className={`${btn} !py-2 !min-h-[38px] !px-3`}><Film size={14} aria-hidden /> Start export</button>
                 </div>
               </>
             )}
@@ -639,7 +770,7 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
                 <p className="mt-2 text-xs text-st-mute tabular-nums">Elapsed {span(exp.elapsed)} · final length {span(total - removed)}</p>
                 <p className="mt-4 text-sm text-st-mute">Keep this tab open and in front until it reaches 100%. Do not press Space or pause the video.</p>
                 <div className="mt-5 flex justify-end">
-                  <button onClick={() => (stopExport.current = true)} className={btnGhost}>Stop export</button>
+                  <button onClick={() => (stopExport.current = true)} className={`${btnGhost} !min-h-[38px] !px-3`}>Stop export</button>
                 </div>
               </>
             )}
@@ -648,8 +779,8 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
               <>
                 <p className="mt-3 text-sm">Saved to your Downloads: <b>{result.name}</b> ({(result.blob.size / 1048576).toFixed(1)} MB).</p>
                 <div className="mt-5 flex justify-end gap-2">
-                  <button onClick={() => save(result.name, result.blob)} className={btnGhost}><Download size={15} aria-hidden /> Download again</button>
-                  <button onClick={() => setDlg('closed')} autoFocus className={btn}>Close</button>
+                  <button onClick={() => save(result.name, result.blob)} className={`${btnGhost} !min-h-[38px] !px-3`}><Download size={14} aria-hidden /> Download again</button>
+                  <button onClick={() => setDlg('closed')} autoFocus className={`${btn} !py-2 !min-h-[38px] !px-3`}>Close</button>
                 </div>
               </>
             )}
@@ -659,8 +790,8 @@ export function Editor({ actions, rec, blob, onBack, onChangePart }: { actions: 
                 <p className="mt-3 text-sm text-red-700">{why}</p>
                 <p className="mt-1 text-sm text-st-mute">Nothing was saved.</p>
                 <div className="mt-5 flex justify-end gap-2">
-                  <button onClick={() => setDlg('closed')} className={btnGhost}>Close</button>
-                  <button onClick={() => setDlg('confirm')} autoFocus className={btn}>Try again</button>
+                  <button onClick={() => setDlg('closed')} className={`${btnGhost} !min-h-[38px] !px-3`}>Close</button>
+                  <button onClick={() => setDlg('confirm')} autoFocus className={`${btn} !py-2 !min-h-[38px] !px-3`}>Try again</button>
                 </div>
               </>
             )}

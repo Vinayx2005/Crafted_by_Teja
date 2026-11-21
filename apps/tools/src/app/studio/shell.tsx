@@ -7,7 +7,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { BookOpen, Check, ChevronDown, FolderOpen, Home, LogOut, Menu, Palette, Scissors, Search, Sparkles, X } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronsLeft, ChevronsRight, FolderOpen, Home, LogOut, Menu, Palette, Scissors, Search, Sparkles, X } from 'lucide-react';
 import { api, configured, errorText, supabase } from '@/lib/studio/client';
 import { btn, btnGhost, card, ErrorNote, field, label, menuItem, Popover, Spinner } from './ui';
 
@@ -104,9 +104,15 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
   const [brands, setBrands] = useState<BrandLite[]>([]);
   const [drawer, setDrawer] = useState(false);
   const [remembered, setRemembered] = useState('');
+  // The desktop sidebar can shrink to icons only, to give the page more room. Remembered in this browser.
+  const [mini, setMini] = useState(false);
+  useEffect(() => { try { setMini(localStorage.getItem('studio-sidebar-mini') === '1'); } catch {} }, []);
+  const toggleMini = () => setMini((m) => { try { localStorage.setItem('studio-sidebar-mini', m ? '0' : '1'); } catch {} return !m; });
 
   const brandId = pathname.match(/^\/studio\/([0-9a-f-]{36})/i)?.[1] ?? '';
   const section = brandId ? params.get('section') || 'create' : 'home';
+  // The Silence remover is a video editor: it gets the whole width (the timeline needs it).
+  const wide = section === 'silence';
 
   // Fresh on every screen change, so a new or archived brand shows up straight away.
   useEffect(() => {
@@ -125,13 +131,13 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
   const org = orgs.find((o) => o.id === (current ?? target)?.organisation_id) ?? orgs[0];
   const href = (key: string) => (key === 'home' ? '/studio' : target ? `/studio/${target.id}?section=${key}` : '/studio');
 
-  const sidebar = (
+  const sidebar = (small: boolean) => (
     <nav aria-label="Studio" className="flex flex-col h-full">
-      <div className="flex items-center gap-2.5 px-5 h-14 shrink-0">
+      <div className={`flex items-center gap-2.5 h-14 shrink-0 ${small ? 'justify-center' : 'px-5'}`}>
         <span className="h-7 w-7 rounded-lg bg-18-orange text-white flex items-center justify-center text-sm font-bold" aria-hidden>C</span>
-        <span className="font-semibold text-[15px] tracking-tight">Content Studio</span>
+        {!small && <span className="font-semibold text-[15px] tracking-tight">Content Studio</span>}
       </div>
-      <ul className="px-3 py-2 space-y-0.5">
+      <ul className={`${small ? 'px-2' : 'px-3'} py-2 space-y-0.5`}>
         {NAV.map(({ key, label: text, icon: Icon }) => {
           const active = section === key;
           return (
@@ -139,22 +145,29 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
               <Link
                 href={href(key)}
                 aria-current={active ? 'page' : undefined}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 min-h-[40px] text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange/40 ${active ? 'bg-18-orange/10 text-18-orange font-semibold' : 'text-st-ink/80 hover:bg-st-surface hover:text-st-ink'}`}
+                title={small ? text : undefined}
+                className={`flex items-center gap-3 rounded-lg ${small ? 'justify-center px-0' : 'px-3'} py-2.5 min-h-[40px] text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange/40 ${active ? 'bg-18-orange/10 text-18-orange font-semibold' : 'text-st-ink/80 hover:bg-st-surface hover:text-st-ink'}`}
               >
-                <Icon size={17} aria-hidden /> {text}
+                <Icon size={17} aria-hidden /> {small ? <span className="sr-only">{text}</span> : text}
               </Link>
             </li>
           );
         })}
       </ul>
-      {!brands.length && <p className="px-5 mt-3 text-xs text-st-mute">Create your first brand on Home to unlock the other sections.</p>}
+      {!brands.length && !small && <p className="px-5 mt-3 text-xs text-st-mute">Create your first brand on Home to unlock the other sections.</p>}
     </nav>
   );
 
   return (
     <Overlay>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:block w-60 shrink-0 border-r border-st-line bg-white">{sidebar}</aside>
+      <aside className={`hidden lg:flex flex-col ${mini ? 'w-16' : 'w-60'} shrink-0 border-r border-st-line bg-white transition-[width]`}>
+        <div className="min-h-0 flex-1">{sidebar(mini)}</div>
+        <button onClick={toggleMini} aria-label={mini ? 'Expand the menu' : 'Collapse the menu'} title={mini ? 'Expand the menu' : 'Collapse the menu'}
+          className={`m-2 flex items-center gap-2 rounded-lg py-2.5 min-h-[40px] text-sm text-st-mute hover:bg-st-surface hover:text-st-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange/40 ${mini ? 'justify-center' : 'px-3'}`}>
+          {mini ? <ChevronsRight size={17} aria-hidden /> : <><ChevronsLeft size={17} aria-hidden /> Collapse</>}
+        </button>
+      </aside>
 
       {/* Tablet and mobile drawer */}
       {drawer && (
@@ -162,7 +175,7 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
           <div className="absolute inset-0 bg-black/30" onClick={() => setDrawer(false)} aria-hidden />
           <aside className="absolute inset-y-0 left-0 w-64 max-w-[85vw] bg-white border-r border-st-line shadow-xl">
             <button onClick={() => setDrawer(false)} aria-label="Close menu" className="absolute top-3 right-3 p-2 text-st-mute hover:text-st-ink"><X size={18} /></button>
-            {sidebar}
+            {sidebar(false)}
           </aside>
         </div>
       )}
@@ -221,7 +234,7 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
         </header>
 
         <main id="studio-main" className="flex-1 overflow-y-auto">
-          <div className="max-w-[960px] mx-auto px-4 md:px-8 py-6 md:py-8">{children}</div>
+          <div className={`${wide ? 'max-w-[1800px]' : 'max-w-[960px]'} mx-auto px-4 md:px-8 py-6 md:py-8`}>{children}</div>
         </main>
       </div>
     </Overlay>

@@ -103,7 +103,7 @@ export default function SilenceHome({ actions }: { actions: HTMLElement | null }
   // Step 2 done. The same part keeps the analysis and the edits; a new part starts the silence check again.
   async function chosen(part: Span) {
     if (!open) return;
-    const rec = same(part, open.rec.range) && open.rec.vol ? open.rec : { ...open.rec, range: part, vol: null, total: 0, removed: 0, splits: [], overrides: [], updatedAt: Date.now() };
+    const rec = same(part, open.rec.range) && open.rec.vol ? open.rec : { ...open.rec, range: part, vol: null, total: 0, removed: 0, splits: [], overrides: [], words: undefined, flags: undefined, updatedAt: Date.now() };
     await putProject(rec).catch(() => {});
     setOpen({ ...open, rec, step: 'edit' });
   }
@@ -133,7 +133,7 @@ export default function SilenceHome({ actions }: { actions: HTMLElement | null }
   if (open) return <Editor key={`${open.rec.id}:${open.rec.range?.start}:${open.rec.range?.end}`} actions={actions} rec={open.rec} blob={open.blob} onBack={() => setOpen(null)} onChangePart={changePart} />;
 
   const newButton = (
-    <button onClick={() => setNaming(true)} className={`${btn} !min-h-[36px] !px-3`}><Plus size={14} aria-hidden /> New project</button>
+    <button onClick={() => setNaming(true)} className={`${btn} !py-2 !min-h-[38px] !px-3`}><Plus size={14} aria-hidden /> New project</button>
   );
 
   return (
@@ -153,7 +153,7 @@ export default function SilenceHome({ actions }: { actions: HTMLElement | null }
         </div>
       ) : (
         <>
-          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {recs.map((r) => (
               <li key={r.id} className={`${card} flex flex-col justify-between gap-4 p-4`}>
                 <button onClick={() => openRec(r)} disabled={busy} className="rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange/40">
@@ -164,8 +164,8 @@ export default function SilenceHome({ actions }: { actions: HTMLElement | null }
                   <p className="mt-1 text-xs text-st-mute">Edited {when(r.updatedAt)}</p>
                 </button>
                 <div className="flex items-center justify-between">
-                  <button onClick={() => openRec(r)} disabled={busy} className={`${btnGhost} !min-h-[34px] !px-3`}>Open</button>
-                  <button onClick={() => remove(r)} aria-label={`Delete ${r.name}`} title="Delete project" className={`${btnGhost} !min-h-[34px] !px-2.5`}><Trash2 size={15} aria-hidden /></button>
+                  <button onClick={() => openRec(r)} disabled={busy} className={`${btnGhost} !min-h-[38px] !px-3`}>Open</button>
+                  <button onClick={() => remove(r)} aria-label={`Delete ${r.name}`} title="Delete project" className={`${btnGhost} !min-h-[38px] !px-2.5`}><Trash2 size={15} aria-hidden /></button>
                 </div>
               </li>
             ))}

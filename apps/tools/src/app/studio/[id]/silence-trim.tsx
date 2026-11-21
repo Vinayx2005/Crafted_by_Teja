@@ -101,8 +101,8 @@ export function Trim({ actions, name, blob, initial, onBack, onNext, onPick }: {
   return (
     <div className="space-y-4">
       {actions && createPortal(<>
-        <button onClick={onBack} className={`${btnGhost} !min-h-[36px] !px-3`}><ArrowLeft size={14} aria-hidden /> Projects</button>
-        <button onClick={() => part && onNext(part)} disabled={!ok} className={`${btn} !min-h-[36px] !px-3`}>Next: Remove silences <ArrowRight size={14} aria-hidden /></button>
+        <button onClick={onBack} className={`${btnGhost} !min-h-[38px] !px-3`}><ArrowLeft size={14} aria-hidden /> Projects</button>
+        <button onClick={() => part && onNext(part)} disabled={!ok} className={`${btn} !py-2 !min-h-[38px] !px-3`}>Next: Remove silences <ArrowRight size={14} aria-hidden /></button>
       </>, actions)}
 
       <div>
@@ -132,7 +132,7 @@ export function Trim({ actions, name, blob, initial, onBack, onNext, onPick }: {
               if (playingPart.current && part && v.currentTime >= part.end) { v.pause(); playingPart.current = false; }
             }}
             onPause={() => (playingPart.current = false)}
-            className="w-full max-h-[45vh] rounded-lg bg-black"
+            className="mx-auto block max-h-[50vh] w-auto max-w-full rounded-lg bg-black"
           />
 
           {/* The whole video as a bar; the chosen part is highlighted between two handles. */}
@@ -163,7 +163,7 @@ export function Trim({ actions, name, blob, initial, onBack, onNext, onPick }: {
                 ))}
               </>
             )}
-            <div className="pointer-events-none absolute inset-y-0 w-0.5 bg-red-500" style={{ left: pct(now) }} />
+            <div className="pointer-events-none absolute inset-y-0 w-0.5 bg-sky-600" style={{ left: pct(now) }} />
           </div>
           <div className="flex justify-between text-xs text-st-mute tabular-nums"><span>0:00</span><span>{hms(dur)}</span></div>
 
@@ -175,12 +175,12 @@ export function Trim({ actions, name, blob, initial, onBack, onNext, onPick }: {
             </div>
           )}
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => part && set({ start: video.current?.currentTime ?? 0, end: part.end })} disabled={!part} className={btnGhost}>Start here</button>
-            <button onClick={() => part && set({ start: part.start, end: video.current?.currentTime ?? dur })} disabled={!part} className={btnGhost}>End here</button>
-            <button onClick={() => set({ start: 0, end: dur })} disabled={!dur} className={btnGhost}>Whole video</button>
-            <button onClick={playPart} disabled={!part} className={btnGhost}><Play size={14} aria-hidden /> Play the part</button>
+            <button onClick={() => part && set({ start: video.current?.currentTime ?? 0, end: part.end })} disabled={!part} className={`${btnGhost} !min-h-[38px] !px-3`}>Start here</button>
+            <button onClick={() => part && set({ start: part.start, end: video.current?.currentTime ?? dur })} disabled={!part} className={`${btnGhost} !min-h-[38px] !px-3`}>End here</button>
+            <button onClick={() => set({ start: 0, end: dur })} disabled={!dur} className={`${btnGhost} !min-h-[38px] !px-3`}>Whole video</button>
+            <button onClick={playPart} disabled={!part} className={`${btnGhost} !min-h-[38px] !px-3`}><Play size={14} aria-hidden /> Play the part</button>
           </div>
-          <p className="text-xs text-st-mute">"Start here" and "End here" use the red line, which follows the video. Arrow keys move a selected handle by 1 second (Shift: 10).</p>
+          <p className="text-xs text-st-mute">"Start here" and "End here" use the blue line, which follows the video. Arrow keys move a selected handle by 1 second (Shift: 10).</p>
         </section>
       )}
     </div>

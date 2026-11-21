@@ -3,6 +3,7 @@
 // video file itself, kept apart so saving an edit never rewrites the big file.
 
 import type { Override, Span } from './silence';
+import type { Flag, Word } from './unwanted';
 
 export type Rec = {
   id: string;
@@ -18,6 +19,8 @@ export type Rec = {
   splits: number[];
   overrides: Override[];
   vol: Uint8Array | null; // volume readings, so a project opens without listening again
+  words?: Word[]; // what was said, with times (Whisper), once "Find unwanted parts" has run
+  flags?: Flag[]; // the highlighted unwanted parts
   hasVideo: boolean;
   updatedAt: number;
 };

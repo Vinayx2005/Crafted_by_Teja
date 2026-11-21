@@ -5,6 +5,7 @@ import { dbStore } from '@/lib/studio/access-db';
 import { HttpError, askJson, cached, insert, patch, principal, rows, withUsage } from '@/lib/studio/server';
 import { cleanSource, newRef } from '@/lib/studio/safety';
 import * as team from '@/lib/studio/team';
+import { MAX_REVIEW_WORDS, parseReview, reviewPrompt } from '@/lib/studio/unwanted';
 import * as knowledge from '@/lib/studio/knowledge';
 import { knowledgeFor } from '@/lib/studio/knowledge';
 import { findChannels, googleNews, googleTrends, hackerNews, hasYouTube, langCode, recentVideos, shortQuery, suggestions, topVideos, wikipedia, withFallback, type Source } from '@/lib/studio/sources';
@@ -489,6 +490,16 @@ async function consolidate(b: any) {
   return { playbook, at };
 }
 
+// ─── Silence remover: unwanted parts ───────────────────────────────────
+// Gemini reads the word-by-word transcript (made by Whisper in the browser) and points at repeated
+// takes, fumbles and fillers. Nothing is cut here; the editor only highlights them.
+async function unwanted(b: any) {
+  const words: string[] = (Array.isArray(b.words) ? b.words : []).map((w: unknown) => String(w ?? '').slice(0, 40));
+  if (!words.length) throw new HttpError(400, 'There is no transcript to check.');
+  if (words.length > MAX_REVIEW_WORDS) throw new HttpError(400, `This part is too long to check at once (${words.length} words; ${MAX_REVIEW_WORDS} at most). Choose a shorter part.`);
+  return { items: parseReview(await askJson<unknown>(reviewPrompt(words), { timeoutMs: 55_000, noThink: true }), words.length) };
+}
+
 // ─── Who may call what ─────────────────────────────────────────────────
 // Every action says which role it needs and what it is about. authorise() looks
 // up who really owns those things; the browser's word is never taken for it.
@@ -515,6 +526,7 @@ const ACTIONS: Record<string, Def> = {
   summarise: { need: 'editor', cron: true, ref: competitorRef, run: (b) => summarise(b) },
   consolidate: { need: 'editor', cron: true, ref: brandRef, run: (b) => consolidate(b) },
   addReel: { need: 'editor', ref: competitorRef, run: (b) => addReel(b) },
+  unwanted: { need: 'editor', ref: brandRef, run: (b) => unwanted(b) },
 };
 
 // Not about one brand: tied to the person's organisation unless a brand is named.
