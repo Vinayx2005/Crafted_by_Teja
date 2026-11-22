@@ -41,10 +41,20 @@ async function partAudio(file: Blob, range: Span | null | undefined, onPct: (pct
 let shared: Worker | null = null;
 let seq = 0;
 
-export async function transcribe(file: Blob, range: Span | null | undefined, onStage: (stage: string, pct: number) => void): Promise<Word[]> {
+// Starts the speech model ahead of time (e.g. when the Silence remover opens), so "Find unwanted
+// parts" does not wait the half minute it takes. A second of silence is enough to load it.
+export function warmSpeech() {
+  shared ??= new Worker(new URL('./speech.worker.ts', import.meta.url), { type: 'module' });
+  shared.postMessage({ id: ++seq, audio: new Float32Array(RATE), offset: 0 });
+}
+
+// `sound` (optional): gives the part's sound ready-made (16 kHz mono), e.g. from the Video Editor's
+// bridge, where ffmpeg reads it in seconds; otherwise the browser decodes it from the file.
+export async function transcribe(file: Blob, range: Span | null | undefined, onStage: (stage: string, pct: number) => void, sound?: () => Promise<Float32Array>): Promise<Word[]> {
   onStage('Reading the sound', 0);
-  const audio = await partAudio(file, range, (pct) => onStage('Reading the sound', pct));
+  const audio = (sound ? await sound().catch(() => null) : null) ?? (await partAudio(file, range, (pct) => onStage('Reading the sound', pct)));
   const starts = pieces(audio.length / RATE);
+  onStage('Listening to the words', 0);
   const worker = (shared ??= new Worker(new URL('./speech.worker.ts', import.meta.url), { type: 'module' }));
   try {
     const words: Word[] = [];

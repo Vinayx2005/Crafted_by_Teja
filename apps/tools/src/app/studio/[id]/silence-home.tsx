@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Film, Plus, Scissors, Trash2, Upload } from 'lucide-react';
 import { clock, hms, type Span } from '@/lib/studio/silence';
+import type { Word } from '@/lib/studio/unwanted';
 import { deleteProject, getProject, getVideo, listProjects, putProject, saveVideo, type Rec } from '@/lib/studio/silence-projects';
 import { btn, btnGhost, card, ErrorNote, field, label, Spinner, useConfirm } from '../ui';
 import { Editor, type SilenceFileKind } from './silence';
@@ -21,11 +22,49 @@ export type SilenceLink = {
   files: { path: string; name: string; size: number }[]; // the project's videos to choose from
   load: (path: string, onPct: (pct: number) => void) => Promise<Blob>;
   onFile: (name: string, blob: Blob, kind: SilenceFileKind) => void;
-  // Timeline mode: work on this one video (the footage on the editor's timeline) straight away,
-  // with no project list. One saved session per video, so reopening carries on where you left off.
-  source?: { path: string; name: string };
+  // Timeline mode: work on what is on the editor's timeline straight away, with no project list:
+  // this video, and only the part of it the timeline uses (range, in the video's seconds).
+  // One saved session per video and part, so reopening carries on where you left off.
+  source?: { path: string; name: string; range?: Span | null; cuts?: LinkCut[] };
   onClose?: () => void;
+  // Timeline mode: puts the result back on the editor's timeline (the parts to keep, video seconds).
+  onApply?: (keeps: Span[]) => Promise<string>;
+  // The sound of a file (or part of it) as 16 kHz mono, read by ffmpeg on this PC (fast).
+  sound16k?: (path: string, range: Span | null) => Promise<Float32Array>;
+  // Sessions kept in the edit project's folder as well as in this browser: every auto-save goes there,
+  // and a session the browser no longer has (cleared, another browser) is brought back from there.
+  saveSession?: (rec: Rec) => void;
+  loadSessions?: () => Promise<Rec[]>;
+  // The words said in a file (or part of it), from Whisper on this PC's graphics card (fastest).
+  transcribe?: (path: string, range: Span | null, onStage: (stage: string, pct: number) => void) => Promise<Word[]>;
+  // 'unwanted': Find unwanted parts only. Its own session, silences are never marked, and it looks for
+  // the unwanted parts straight away.
+  mode?: 'unwanted';
 };
+// When the session's video is the timeline's footage joined into one file: which part of which
+// original file each stretch of it is (file seconds `from`-`to`, starting `at` seconds into the video).
+export type LinkCut = { path: string; from: number; to: number; at: number };
+
+// Words already heard for this edit, by original file: every linked session that ran "Find unwanted
+// parts" on (part of) a file knows what was said there. If those cover what this session's video is
+// made of, its words are put together from them, so Whisper does not listen to the same speech again.
+function reuseWords(all: Rec[], editorId: string, src: { path: string; range?: Span | null; cuts?: LinkCut[] }): Word[] | null {
+  const known = all.filter((r) => r.link?.editorId === editorId && r.words?.length && !/^work\/timeline-footage-/.test(r.link.path));
+  const wanted: LinkCut[] = src.cuts ?? (src.range ? [{ path: src.path, from: src.range.start, to: src.range.end, at: 0 }] : []);
+  if (!wanted.length) return null;
+  const out: Word[] = [];
+  for (const c of wanted) {
+    const r = known.find((k) => k.link!.path === c.path && (!k.range || (k.range.start <= c.from + 0.05 && k.range.end >= c.to - 0.05)));
+    if (!r) return null; // part of it was never heard
+    const off = r.range?.start ?? 0;
+    for (const w of r.words!) {
+      const s = w.s + off, e = w.e + off; // file seconds
+      const mid = (s + e) / 2;
+      if (mid >= c.from && mid < c.to) out.push({ w: w.w, s: Math.max(0, s - c.from) + c.at, e: Math.min(c.to, e) - c.from + c.at });
+    }
+  }
+  return out.sort((a, b) => a.s - b.s);
+}
 
 // "New project" when linked: a name, and one of the edit project's videos.
 function LinkedNew({ link, busy, onCancel, onCreate }: { link: SilenceLink; busy: boolean; onCancel: () => void; onCreate: (name: string, path: string) => void }) {
@@ -127,12 +166,30 @@ export default function SilenceHome({ actions, link }: { actions: HTMLElement | 
     started.current = true;
     (async () => {
       const all = await listProjects().catch(() => [] as Rec[]);
-      let rec = all.find((r) => r.link?.editorId === link.editorId && r.link.path === src.path) ?? null;
+      // Sessions saved in the project folder that this browser lacks (or has older): bring them back.
+      for (const s of (await link.loadSessions?.().catch(() => [] as Rec[])) ?? []) {
+        const i = all.findIndex((r) => r.id === s.id);
+        if (i >= 0 && all[i].updatedAt >= s.updatedAt) continue;
+        await putProject(s).catch(() => {});
+        if (i >= 0) all[i] = s; else all.push(s);
+      }
+      // Joined timeline footage is remade when the cuts change: drop sessions on older versions.
+      for (const r of all) if (r.link?.editorId === link.editorId && r.link.path !== src.path && /^work\/timeline-footage-/.test(r.link.path)) await deleteProject(r.id).catch(() => {});
+      let rec = all.find((r) => r.link?.editorId === link.editorId && r.link.path === src.path && r.link.mode === link.mode) ?? null;
       const blob = await loadLinked(src.path);
       if (!blob) return;
+      const range = src.range ?? null;
       if (!rec) {
-        rec = { id: crypto.randomUUID(), name: link.editorId.split('/').pop() ?? link.editorId, fileName: src.name, size: blob.size, range: null, total: 0, removed: 0, threshold: 25, minSilence: 0.5, buffer: 0.1, splits: [], overrides: [], vol: null, hasVideo: false, updatedAt: Date.now(), link: { editorId: link.editorId, path: src.path } };
+        rec = { id: crypto.randomUUID(), name: link.editorId.split('/').pop() ?? link.editorId, fileName: src.name, size: blob.size, range, total: 0, removed: 0, threshold: 25, minSilence: 0.5, buffer: 0.1, splits: [], overrides: [], vol: null, hasVideo: false, updatedAt: Date.now(), link: { editorId: link.editorId, path: src.path, ...(link.mode ? { mode: link.mode } : {}) } };
         await putProject(rec).catch(() => {});
+      } else if (!(range == null && rec.range == null) && !same(range, rec.range ?? null)) {
+        // The timeline now uses a different part of this video: start that part afresh.
+        rec = { ...rec, range, vol: null, total: 0, removed: 0, splits: [], overrides: [], words: undefined, flags: undefined, updatedAt: Date.now() };
+        await putProject(rec).catch(() => {});
+      }
+      if (!rec.words) {
+        const reused = reuseWords(all, link.editorId, src);
+        if (reused) { rec = { ...rec, words: reused }; await putProject(rec).catch(() => {}); }
       }
       setOpen({ rec, blob, step: 'edit' });
     })();
@@ -224,7 +281,10 @@ export default function SilenceHome({ actions, link }: { actions: HTMLElement | 
   const timeline = !!link?.source;
   if (open?.step === 'trim') return <Trim key={open.rec.id} actions={actions} name={open.rec.name} blob={open.blob} initial={open.rec.range ?? null} onBack={() => (timeline ? setOpen({ ...open, step: 'edit' }) : setOpen(null))} onNext={chosen} onPick={pickVideo} />;
   if (open) return <Editor key={`${open.rec.id}:${open.rec.range?.start}:${open.rec.range?.end}`} actions={actions} rec={open.rec} blob={open.blob}
-    onBack={() => (timeline ? link?.onClose?.() : setOpen(null))} backLabel={timeline ? 'Back to the editor' : undefined} onChangePart={changePart} onFile={link?.onFile} />;
+    onBack={() => (timeline ? link?.onClose?.() : setOpen(null))} backLabel={timeline ? 'Back to the editor' : undefined}
+    onlyUnwanted={link?.mode === 'unwanted'} onChangePart={timeline ? undefined : changePart} onFile={link?.onFile} onApply={timeline ? link?.onApply : undefined} onPersist={link?.saveSession}
+    sound16k={link?.sound16k && open.rec.link ? () => link.sound16k!(open.rec.link!.path, open.rec.range ?? null) : undefined}
+    transcribeNative={link?.transcribe && open.rec.link ? (onStage) => link.transcribe!(open.rec.link!.path, open.rec.range ?? null, onStage) : undefined} />;
 
   // Timeline mode never shows the project list: only the loading bar, or what went wrong.
   if (timeline)

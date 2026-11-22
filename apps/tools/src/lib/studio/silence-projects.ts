@@ -25,7 +25,7 @@ export type Rec = {
   updatedAt: number;
   // Set when the project was started from the Video Editor: which edit project and which file
   // (e.g. "raw/raw.mp4"). The video is read again from D:\Editing instead of kept in the browser.
-  link?: { editorId: string; path: string };
+  link?: { editorId: string; path: string; mode?: 'unwanted' }; // mode: a Find unwanted parts session (no silences)
 };
 
 const open = () =>

@@ -15,21 +15,41 @@
 // work/promo.json), so it shows the real edit: cuts, whiteboards, cards, captions, SFX.
 // It only works in a browser on that PC: the bridge listens on 127.0.0.1 only.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft, CheckCircle2, Clapperboard, Clock, Keyboard, Trash2, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
-  MessageSquare, MessageSquarePlus, Minus, Music, Play, Plug, Plus, RefreshCw, Scissors, Send, Sparkles, Square, Unlock, Upload, Volume2, VolumeX, X,
+  ChevronLeft, ChevronRight, ZoomIn, ZoomOut, CheckCircle2, Clapperboard, Clock, Flag, Keyboard, Magnet, MousePointer2, Trash2, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
+  MessageSquare, MessageSquarePlus, Minus, Music, Play, Plug, Paperclip, Plus, RefreshCw, ScanSearch, Scissors, Send, Sparkles, Square, Unlock, Upload, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { btn, btnGhost, card, ErrorNote, field, label, Spinner, useConfirm } from '../ui';
 import type { SilenceFileKind } from './silence';
 import SilenceHome, { type SilenceLink } from './silence-home';
+import { warmSpeech } from '@/lib/studio/transcribe';
+import type { Word } from '@/lib/studio/unwanted';
+import type { Rec } from '@/lib/studio/silence-projects';
+
+// The Silence remover's volume readings travel to the project folder as text.
+const toB64 = (u: Uint8Array) => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
+const fromB64 = (b: string) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
+
+// "All changes saved" (with the time on hover), "Saving…", or why the last change was not saved.
+function SaveStatus({ save }: { save: { state: 'idle' | 'saving' | 'saved' | 'error'; at?: number; error?: string } }) {
+  if (save.state === 'saving') return <span className="inline-flex items-center gap-1.5 text-xs text-st-mute" role="status"><Spinner /> Saving…</span>;
+  if (save.state === 'error') return <span className="inline-flex items-center gap-1.5 text-xs text-red-700 max-w-[16rem] truncate" role="status" title={save.error}><X size={13} aria-hidden /> Not saved: {save.error}</span>;
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-st-mute" role="status"
+      title={save.at ? `Last saved at ${new Date(save.at).toLocaleTimeString()}. Every change is saved to the project on this PC as you make it.` : 'Every change is saved to the project on this PC as you make it.'}>
+      <CheckCircle2 size={13} className="text-emerald-600" aria-hidden /> All changes saved
+    </span>
+  );
+}
 
 const BRIDGE = 'http://127.0.0.1:4317';
 const TOKEN_KEY = 'studio-editor-token';
 
 type Step = { key: string; label: string; done: boolean };
 type FileInfo = { name: string; path: string; size: number; modified: number; kind: 'video' | 'image' | 'audio' | 'text' | 'other' };
+type SheetFrame = { path: string; t: number; modified: number };
 type TextFile = { name: string; path: string; modified: number };
 type Project = {
   id: string; name: string; group: string | null; updated: number;
@@ -37,7 +57,10 @@ type Project = {
 };
 type Detail = {
   id: string; name: string; dir: string; steps: Step[]; raw: FileInfo[]; out: FileInfo[]; workImages: FileInfo[]; workText: TextFile[];
-  brief: string | null; plan: string | null; session: string | null; running: boolean; busyElsewhere: string | null;
+  frames?: SheetFrame[]; // the storyboard's single frames, in play order
+  brief: string | null; plan: string | null; session: string | null;
+  captionReview?: { text: string; modified: number } | null; // work/caption_review.md, the per-cue before/after table
+  running: boolean; busyElsewhere: string | null;
 };
 type Ev = { at: number; kind: 'user' | 'assistant' | 'tool' | 'done' | 'error' | 'note' | 'state'; text?: string; name?: string; ok?: boolean; cost?: number | null; seconds?: number; running?: boolean };
 type Conn = 'checking' | 'offline' | 'token' | 'ok';
@@ -96,12 +119,13 @@ function useBridge() {
 type Bridge = ReturnType<typeof useBridge>;
 
 // ---------- page ----------
-export default function VideoEditor({ actions }: { actions?: HTMLElement | null }) {
+// `onProjectOpen`: told whether a project is open, so the page can hide its own title then.
+export default function VideoEditor({ actions, onProjectOpen }: { actions?: HTMLElement | null; onProjectOpen?: (open: boolean) => void }) {
   const bridge = useBridge();
   if (bridge.conn === 'checking') return <p className="text-st-mute text-sm flex items-center gap-2"><Spinner /> Looking for the editor on this PC…</p>;
   if (bridge.conn === 'offline') return <Offline onRetry={bridge.check} />;
   if (bridge.conn === 'token') return <NoConnect error={bridge.error} onRetry={bridge.check} />;
-  return <Editor bridge={bridge} actions={actions ?? null} />;
+  return <Editor bridge={bridge} actions={actions ?? null} onProjectOpen={onProjectOpen} />;
 }
 
 function NoConnect({ error, onRetry }: { error: string; onRetry: () => void }) {
@@ -134,10 +158,12 @@ function Offline({ onRetry }: { onRetry: () => void }) {
 // Like the Silence remover: the Video Editor opens on the list of projects. "Create new project"
 // asks for a folder on this PC (the normal Windows "Select folder" window, which can also make a
 // new folder); the whole edit then happens in that folder.
-function Editor({ bridge, actions }: { bridge: Bridge; actions: HTMLElement | null }) {
+function Editor({ bridge, actions, onProjectOpen }: { bridge: Bridge; actions: HTMLElement | null; onProjectOpen?: (open: boolean) => void }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [selected, setSelected] = useState('');
+  // A reload keeps the open project (this tab only: coming to the Video Editor again starts on the projects page).
+  const [selected, setSelected] = useState(() => { try { return sessionStorage.getItem('studio-editor-open') ?? ''; } catch { return ''; } });
+  useEffect(() => { try { if (selected) sessionStorage.setItem('studio-editor-open', selected); else sessionStorage.removeItem('studio-editor-open'); } catch {} }, [selected]);
   const [error, setError] = useState('');
   const [picking, setPicking] = useState(false);
 
@@ -162,6 +188,13 @@ function Editor({ bridge, actions }: { bridge: Bridge; actions: HTMLElement | nu
   }, [bridge, load]);
 
   const open = selected && projects?.some((p) => p.id === selected) ? selected : '';
+  useEffect(() => { onProjectOpen?.(!!open); }, [open, onProjectOpen]);
+  useEffect(() => () => onProjectOpen?.(false), [onProjectOpen]);
+  useEffect(() => {
+    const home = () => { setSelected(''); load(); };
+    window.addEventListener('studio-video-home', home);
+    return () => window.removeEventListener('studio-video-home', home);
+  }, [load]);
   const createButton = (
     <button onClick={create} disabled={picking} className={`${btn} !py-2 !min-h-[38px] !px-3`}>
       {picking ? <Spinner /> : <Plus size={14} aria-hidden />} {picking ? 'Choose a folder…' : 'Create new project'}
@@ -171,7 +204,8 @@ function Editor({ bridge, actions }: { bridge: Bridge; actions: HTMLElement | nu
   return (
     <div className="space-y-3">
       {!open && actions && createPortal(createButton, actions)}
-      <Account bridge={bridge} />
+      {/* The Claude sign-in lives on the projects page. In a project it only shows when signed out. */}
+      <Account bridge={bridge} quiet={!!open} />
       <ErrorNote text={error} />
       {picking && (
         <p className={`${card} p-3 text-sm flex items-center gap-2`} role="status">
@@ -245,7 +279,60 @@ function ProjectsHome({ projects, busy, bridge, createButton, onOpen, onChanged 
 }
 
 // ---------- one project: the editor screen ----------
-type View = { kind: 'video' | 'image' | 'audio'; path: string; name: string; play?: boolean } | { kind: 'doc'; path: string; name: string; text?: string | null };
+// timeline: the player is playing the timeline (the footage cuts in order), not the whole file.
+type View = { kind: 'video' | 'image' | 'audio'; path: string; name: string; play?: boolean; start?: number; timeline?: boolean } | { kind: 'doc'; path: string; name: string; text?: string | null };
+
+// The timeline's clock, shared with the player's own controls without re-rendering the whole page.
+type TlClock = { t: number; duration: number };
+function makeClock() {
+  let state: TlClock = { t: 0, duration: 0 };
+  const subs = new Set<() => void>();
+  let seekFn: ((t: number) => void) | null = null;
+  return {
+    get: () => state,
+    set: (n: TlClock) => { if (n.t === state.t && n.duration === state.duration) return; state = n; subs.forEach((f) => f()); },
+    sub: (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; },
+    seek: (t: number) => seekFn?.(t),
+    setSeek: (f: (t: number) => void) => { seekFn = f; },
+  };
+}
+type Clock = ReturnType<typeof makeClock>;
+
+// The live preview (the real Edit composition in a Remotion Player, served by the bridge in an
+// iframe): its state, and the commands sent to it. Commands sent before it is ready wait.
+type LiveState = { t: number; playing: boolean; duration: number; ready: boolean; error: string | null };
+function makeLive() {
+  let state: LiveState = { t: 0, playing: false, duration: 0, ready: false, error: null };
+  const subs = new Set<() => void>();
+  let win: Window | null = null;
+  let waiting: Record<string, unknown>[] = [];
+  const set = (n: Partial<LiveState>) => { state = { ...state, ...n }; subs.forEach((f) => f()); };
+  const post = (m: Record<string, unknown>) => {
+    if (win && state.ready) win.postMessage(m, BRIDGE);
+    else if (m.type === 'seek') waiting = [...waiting.filter((x) => x.type !== 'seek'), m];
+    else if (m.type !== 'props') waiting.push(m);
+  };
+  return {
+    get: () => state,
+    sub: (f: () => void) => { subs.add(f); return () => { subs.delete(f); }; },
+    set,
+    // The iframe loaded (or went away). Ready comes from the page itself.
+    attach: (w: Window | null) => { win = w; set({ ready: false, playing: false }); },
+    ready: (w: Window, props: unknown) => {
+      win = w;
+      set({ ready: true, error: null });
+      win?.postMessage({ type: 'props', props }, BRIDGE);
+      const q = waiting; waiting = [];
+      q.forEach((m) => win?.postMessage(m, BRIDGE));
+    },
+    post,
+    seek: (t: number) => { set({ t }); post({ type: 'seek', t }); },
+    toggle: () => post({ type: 'toggle' }),
+    pause: () => post({ type: 'pause' }),
+  };
+}
+type Live = ReturnType<typeof makeLive>;
+const LIVE_KEY = 'studio-editor-live';
 
 const KICKOFF = (id: string) =>
   `Edit this video. Project folder: projects/${id} (raw footage in raw/). Follow the long-form-whiteboard-animation skill from Part 1: look at what is already in the folder, then ask me the intake questions.`;
@@ -307,35 +394,62 @@ const changesPrompt = (stage: FirstDraft['stage'] | undefined, text: string) =>
     : stage === 'draft' || stage === 'draft-working'
       ? `Changes to the 1st draft:\n${text}\n\nMake these changes, then render the 1st draft again (same file name in out/) and run the QA checks. Tell me when it is ready.`
       : `Changes to this video:\n${text}`;
+// "Save this for future videos too": after fixing this video, write the change into the skill as
+// a general rule (not this video's times or words), rebuild Skills.docx as D:\Editing\CLAUDE.md
+// says, and say exactly what was written.
+const SKILL_NOTE = `\n\nAlso save this for future videos: once this video is changed, update the long-form-whiteboard-animation skill (or the skill this change belongs to) so every future video follows it. Write it as a general rule in the right place of the skill, not as this video's times, words or file names, and don't duplicate or contradict a rule that is already there; if it conflicts with one, change that rule instead. Rebuild Skills.docx as CLAUDE.md says. Then tell me, in a short separate part of your reply, the exact rule you added or changed and in which skill file.`;
 
 // Storyboard sheets: images in out/ (and work/) named like the skill's sheets.
 const isSheet = (f: FileInfo) => f.kind === 'image' && /storyboard|scenes|finished|frames|transition|sheet/i.test(f.name);
 
 function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bridge: Bridge; project: Project; onBack: () => void; onChanged: () => void }) {
   const [d, setD] = useState<Detail | null>(null);
-  const [timeline, setTimeline] = useState<{ file: string | null; data: Record<string, unknown> | null } | null>(null);
+  const [timeline, setTimeline] = useState<{ file: string | null; modified?: number; data: Record<string, unknown> | null; silence?: SilenceSource | null; unwanted?: SilenceSource | null } | null>(null);
   const [events, setEvents] = useState<Ev[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
+  const [tlNote, setTlNote] = useState<{ text: string; error?: boolean; undo?: boolean } | null>(null);
+  // Magnetic timeline: a per-browser preference, on unless turned off.
+  const [magnetic, setMagnetic] = useState(true);
+  useEffect(() => { try { setMagnetic(localStorage.getItem('studio-editor-magnetic') !== '0'); } catch {} }, []);
+  const toggleMagnetic = () => setMagnetic((m) => { try { localStorage.setItem('studio-editor-magnetic', m ? '0' : '1'); } catch {} return !m; });
+  // Markers on the timeline, kept with the project (work/editor/state.json).
+  const [markers, setMarkers] = useState<number[]>([]);
   const [view, setView] = useState<View | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const [muted, setMuted] = useState(false);
-  const [silenceOpen, setSilenceOpen] = useState(false);
+  const [silenceOpen, setSilenceOpen] = useState<false | 'silence' | 'unwanted'>(false);
   const [firstDraft, setFirstDraft] = useState<FirstDraft | null>(null);
   const [briefOpen, setBriefOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
+  const [captionsOpen, setCaptionsOpen] = useState(false);
   const [changesOpen, setChangesOpen] = useState(false);
 
-  // Where the 1st draft stands, kept by the bridge in work/editor/state.json.
+  // Saving: every change is written to the project on this PC straight away (edit.json, markers, the
+  // Silence remover's sessions…). This shows that it happened, or that it could not.
+  const [save, setSave] = useState<{ state: 'idle' | 'saving' | 'saved' | 'error'; at?: number; error?: string }>({ state: 'idle' });
+  const saving = useCallback(async <T,>(p: Promise<T>): Promise<T> => {
+    setSave({ state: 'saving' });
+    try { const r = await p; setSave({ state: 'saved', at: Date.now() }); return r; }
+    catch (e) { setSave({ state: 'error', error: (e as Error).message }); throw e; }
+  }, []);
+
+  // Where you were (the file in the player, the playhead), kept with the project so it reopens there.
+  type Ui = { view?: { path: string; name: string; timeline?: boolean }; t?: number };
+  const [ui, setUi] = useState<Ui | null | undefined>(undefined); // undefined: still loading
+
+  // Where the 1st draft stands, the markers and where you were, kept by the bridge in work/editor/state.json.
   useEffect(() => {
-    bridge.call<{ firstDraft?: FirstDraft }>(`/api/p/state?id=${encodeURIComponent(id)}`).then((s) => setFirstDraft(s.firstDraft ?? null)).catch(() => {});
+    bridge.call<{ firstDraft?: FirstDraft; markers?: number[]; ui?: Ui }>(`/api/p/state?id=${encodeURIComponent(id)}`)
+      .then((s) => { setFirstDraft(s.firstDraft ?? null); setMarkers(Array.isArray(s.markers) ? s.markers : []); setUi(s.ui ?? null); })
+      .catch(() => setUi(null));
   }, [bridge, id]);
   const saveDraft = useCallback((fd: FirstDraft | null) => {
     setFirstDraft(fd);
-    bridge.call(`/api/p/state?id=${encodeURIComponent(id)}`, { firstDraft: fd }).catch(() => {});
-  }, [bridge, id]);
+    saving(bridge.call(`/api/p/state?id=${encodeURIComponent(id)}`, { firstDraft: fd })).catch(() => {});
+  }, [bridge, id, saving]);
 
   const refresh = useCallback(async () => {
     try {
@@ -373,6 +487,14 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
     const t = setInterval(refresh, 8000);
     return () => clearInterval(t);
   }, [running, refresh]);
+  // There is no Refresh button: coming back to this tab (or window) reads the files again, so files
+  // added to the folder outside the app show up.
+  useEffect(() => {
+    const again = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', again);
+    document.addEventListener('visibilitychange', again);
+    return () => { window.removeEventListener('focus', again); document.removeEventListener('visibilitychange', again); };
+  }, [refresh]);
 
   // The rendered video the timeline belongs to: the newest final, else the newest preview.
   const program = useMemo(() => {
@@ -380,31 +502,116 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
     return vids.find((f) => !/preview|phone/i.test(f.name)) ?? vids.find((f) => /preview/i.test(f.name)) ?? vids[0] ?? null;
   }, [d]);
 
-  // Open something in the player on first load: the program video, else the first raw video.
+  // The timeline opens files in the player at a given moment (the cut under a click, the next cut).
+  const openAt = useCallback((path: string, start: number, play: boolean) =>
+    setView({ kind: 'video', path, name: path.split('/').pop() || path, start, play, timeline: true }), []);
+  const clock = useMemo(makeClock, []);
+  const live = useMemo(makeLive, []);
+  // Graphics on: the timeline plays in the live preview (with whiteboards, cards, captions).
+  // Off: the footage cuts only (lighter, and the volume meter follows it).
+  const [graphics, setGraphics] = useState(true);
+  useEffect(() => { try { if (localStorage.getItem(LIVE_KEY) === 'off') setGraphics(false); } catch { /* default on */ } }, []);
+  const toggleGraphics = () => setGraphics((g) => { try { localStorage.setItem(LIVE_KEY, g ? 'off' : 'on'); } catch { /* ignore */ } return !g; });
+
+  // The first footage cut, to play the timeline from the start.
+  const firstCut = useMemo(() => {
+    const segs = Array.isArray(timeline?.data?.segments) ? (timeline!.data!.segments as unknown[]).filter(isObj) : [];
+    const s = segs[0];
+    const prefix = `projects/${id}/`;
+    const src = s && typeof s.src === 'string' ? s.src.replace(/\\/g, '/') : '';
+    return src.startsWith(prefix) ? { path: src.slice(prefix.length), from: num(s.from) ?? 0 } : null;
+  }, [timeline, id]);
+  const programFresh = !!program && !!timeline?.modified && program.modified >= timeline.modified - 2000;
+  const tlView = view?.kind === 'video' && !!view.timeline;
+  const canLive = timeline?.file === 'work/edit.json' && !!timeline.data && Array.isArray(timeline.data.segments) && Number(timeline.data.durationInFrames) > 0;
+  const liveOn = tlView && canLive && graphics;
+  useEffect(() => { if (liveOn) video?.pause(); else live.pause(); }, [liveOn, video, live]);
+  useEffect(() => { live.post({ type: 'mute', muted }); }, [live, muted]);
+  // Graphics on / off keeps the playhead where it was.
+  const lastLive = useRef(liveOn);
   useEffect(() => {
-    if (!d || view) return;
+    if (lastLive.current === liveOn) return;
+    lastLive.current = liveOn;
+    const t = clock.get().t;
+    const h = setTimeout(() => clock.seek(t), 300);
+    return () => clearTimeout(h);
+  }, [liveOn, clock]);
+  const playTimeline = useCallback(() => { if (firstCut) openAt(firstCut.path, firstCut.from, false); }, [firstCut, openAt]);
+
+  // Open something in the player on first load: an up-to-date render of the edit, else the
+  // timeline itself (its footage cuts), else the render, else the first raw video.
+  const restoreT = useRef<number | null>(null);
+  useEffect(() => {
+    if (!d || view || !timeline || ui === undefined) return;
+    // Reopen where you left off, if that file is still there.
+    const v = ui?.view;
+    const exists = (p: string) => d.raw.some((f) => f.path === p) || d.out.some((f) => f.path === p);
+    if (v && exists(v.path)) {
+      if (v.timeline) { restoreT.current = ui?.t ?? 0; return setView({ kind: 'video', path: v.path, name: v.name, timeline: true }); }
+      return setView({ kind: 'video', path: v.path, name: v.name, start: ui?.t ?? 0 });
+    }
+    if (program && programFresh) return setView({ kind: 'video', path: program.path, name: program.name });
+    if (firstCut) return playTimeline();
     const first = program ?? d.raw.find((f) => f.kind === 'video');
     if (first) setView({ kind: 'video', path: first.path, name: first.name });
-  }, [d, view, program]);
+  }, [d, view, timeline, program, programFresh, firstCut, playTimeline, ui]);
+  // Timeline preview reopened: put the playhead back once the timeline is ready.
+  useEffect(() => {
+    if (restoreT.current == null || !view || view.kind !== 'video' || !view.timeline || !timeline?.data) return;
+    const t = restoreT.current;
+    restoreT.current = null;
+    const h = setTimeout(() => clock.seek(t), 400);
+    return () => clearTimeout(h);
+  }, [view, timeline, clock]);
+  // Keep where you are: every couple of seconds if it changed, and when leaving the project.
+  const uiNow = useRef<() => Ui>(() => ({}));
+  uiNow.current = () => ({
+    view: view && view.kind === 'video' ? { path: view.path, name: view.name, timeline: !!view.timeline } : undefined,
+    t: Math.round((view && view.kind === 'video' && view.timeline ? clock.get().t : video?.currentTime ?? 0) * 10) / 10,
+  });
+  useEffect(() => {
+    if (ui === undefined) return;
+    let last = JSON.stringify(ui ?? {});
+    const put = () => {
+      const now = JSON.stringify(uiNow.current());
+      if (now === last) return;
+      last = now;
+      bridge.call(`/api/p/state?id=${encodeURIComponent(id)}`, { ui: JSON.parse(now) }).catch(() => {});
+    };
+    const h = setInterval(put, 2000);
+    return () => { clearInterval(h); put(); };
+  }, [ui === undefined, bridge, id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { if (video) video.muted = muted; }, [video, muted]);
 
-  // The video the Silence remover works on: the footage on the timeline (V1, the source the
-  // edit is built from), else the video in the preview, else the first raw video.
-  const timelineSource = useMemo(() => {
+  // What the Silence remover works on: only what is on the timeline. One continuous piece of one
+  // file -> that file, limited to that part (range). Several cuts -> the bridge first joins the
+  // timeline's footage into one video (build). No timeline yet -> the preview video, else raw footage.
+  const freshSource = useMemo<SilenceSource | null>(() => {
     const data = timeline?.data;
-    const segs = Array.isArray(data?.segments) ? (data!.segments as unknown[]) : [];
-    const first = segs.find(isObj);
-    const src = first && typeof first.src === 'string' ? first.src : typeof data?.src === 'string' ? data.src : null;
-    if (src) {
-      const rel = src.replace(/\\/g, '/');
-      const prefix = `projects/${id}/`;
-      if (rel.startsWith(prefix)) { const p = rel.slice(prefix.length); return { path: p, name: p.split('/').pop() ?? p, from: 'timeline' as const }; }
+    const prefix = `projects/${id}/`;
+    const segs = (Array.isArray(data?.segments) ? (data!.segments as unknown[]) : []).filter(isObj).map((x) => {
+      const src = typeof x.src === 'string' ? x.src.replace(/\\/g, '/') : '';
+      return { rel: src.startsWith(prefix) ? src.slice(prefix.length) : null, from: num(x.from) ?? 0, to: num(x.to) ?? 0 };
+    });
+    if (segs.length && segs.every((x) => x.rel)) {
+      const tlStart = num(data?.introPreroll) ?? 0;
+      const oneRun = segs.every((x, i) => i === 0 || (x.rel === segs[i - 1].rel && Math.abs(x.from - segs[i - 1].to) < 0.05));
+      const p = segs[0].rel!;
+      if (oneRun) return { path: p, name: p.split('/').pop() ?? p, from: 'timeline', range: { start: segs[0].from, end: segs[segs.length - 1].to }, tlStart };
+      // Where each stretch of the joined video comes from, so words heard before can be reused.
+      let at = 0;
+      const cuts = segs.map((x) => { const c = { path: x.rel!, from: x.from, to: x.to, at }; at += x.to - x.from; return c; });
+      return { path: '', name: 'the timeline footage', from: 'timeline', build: true, tlStart, cuts };
     }
     if (view && view.kind === 'video') return { path: view.path, name: view.name, from: 'preview' as const };
     const raw = d?.raw.find((f) => f.kind === 'video');
     return raw ? { path: raw.path, name: raw.name, from: 'footage' as const } : null;
   }, [timeline, view, d, id]);
+  // The timeline is exactly what the last "Apply to timeline" of that tool made: reopen that session, with its work.
+  // Remove pauses & fillers and Find unwanted parts each remember their own.
+  const timelineSource = useMemo<SilenceSource | null>(() => (timeline?.silence?.path ? { ...timeline.silence, from: 'timeline', build: false, applied: true } : freshSource), [timeline, freshSource]);
+  const unwantedSource = useMemo<SilenceSource | null>(() => (timeline?.unwanted?.path ? { ...timeline.unwanted, from: 'timeline', build: false, applied: true } : freshSource), [timeline, freshSource]);
 
   // The player panel is exactly as wide as its frame (1920×1080 scaled to the row height),
   // so there is no empty space beside the video; the media panel takes the rest of the width.
@@ -465,13 +672,13 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
     saveDraft({ ...firstDraft, stage: 'draft-working', draftStartedAt: Date.now() });
     say(APPROVE_PROMPT(d?.name ?? id));
   }
-  function sendChanges(text: string) {
+  function sendChanges(text: string, forFuture = false) {
     setChangesOpen(false);
     setBoardOpen(false);
     const st = firstDraft?.stage;
     if (st === 'storyboard' || st === 'storyboard-working') saveDraft({ ...firstDraft!, stage: 'storyboard-working', startedAt: Date.now() });
     else if (st === 'draft' || st === 'draft-working') saveDraft({ ...firstDraft!, stage: 'draft-working', draftStartedAt: Date.now() });
-    say(changesPrompt(st, text));
+    say(changesPrompt(st, text) + (forFuture ? SKILL_NOTE : ''));
   }
 
   if (!d) return error ? <ErrorNote text={error} /> : <p className="text-st-mute text-sm flex items-center gap-2"><Spinner /> Opening…</p>;
@@ -483,41 +690,71 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
   };
 
   return (
-    <div className="space-y-3">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <button onClick={onBack} className={btnGhost} title="Back to all projects"><ArrowLeft size={15} aria-hidden /> Projects</button>
-        <div className="min-w-0 px-1">
-          <h2 className="font-semibold text-sm truncate">{project.name}</h2>
-          <p className="text-[11px] text-st-mute truncate max-w-[28rem]" title={project.dir}>{project.dir}</p>
-        </div>
+    <div className="space-y-3 -mt-3 md:-mt-5"> {/* up into the page's top padding: less empty space above the title */}
+      {/* Title row: the project's name (its folder on hover), then save status and Export on the right.
+          Back to the projects: the Video Editor icon in the left rail. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="flex-1 min-w-0 text-xl font-semibold tracking-tight truncate" title={project.dir}>{project.name}</h1>
+        <SaveStatus save={save} />
         <ExportButton id={id} bridge={bridge} onDone={refresh}
           onPlay={(p) => setView({ kind: 'video', path: p, name: p.split('/').pop() || p, play: true })} />
-        <div className="flex-1" />
-        <button onClick={refresh} className={btnGhost} aria-label="Refresh files" title="Refresh"><RefreshCw size={15} aria-hidden /></button>
       </div>
       <ErrorNote text={error} />
 
       {/* Editor grid, as sketched: media | player | meter, then AI features, then the timeline. */}
-      <div ref={gridRef} className="grid gap-3 grid-cols-1 lg:grid-cols-[minmax(240px,1fr)_auto_64px] lg:grid-rows-[minmax(300px,1fr)_auto_auto] lg:h-[calc(100vh-13.5rem)] lg:min-h-[640px]">
+      <div ref={gridRef} className="grid gap-3 grid-cols-1 lg:grid-cols-[minmax(240px,1fr)_auto_64px] lg:grid-rows-[minmax(300px,1fr)_auto_auto] lg:h-[calc(100vh-12.25rem)] lg:min-h-[640px]">
         <MediaPanel boxRef={mediaRef} d={d} bridge={bridge} view={view} onOpen={setView} onChanged={refresh} />
         <Viewer width={playerW} d={d} bridge={bridge} view={view} onVideo={setVideo} program={program} vertical={vertical}
-          onProgram={() => program && setView({ kind: 'video', path: program.path, name: program.name })} />
+          onProgram={() => program && setView({ kind: 'video', path: program.path, name: program.name })}
+          clock={clock} canPlayTimeline={!!firstCut} onPlayTimeline={playTimeline}
+          live={liveOn ? live : null} liveProps={liveOn ? timeline?.data ?? null : null} canLive={tlView && canLive} graphics={graphics} onGraphics={toggleGraphics} />
         <div className="hidden lg:block lg:row-span-3 lg:col-start-3 lg:row-start-1"><Meter video={video} muted={muted} onMute={() => setMuted((m) => !m)} /></div>
         <AiBar running={running} busyElsewhere={d.busyElsewhere} draft={firstDraft} chatOpen={chatOpen} unread={!chatOpen && events.length > 0 && events[events.length - 1].kind === 'assistant'}
-          onFeature={(f) => (f.key === 'cut' ? setSilenceOpen(true) : say(f.text(id)))} onDraft={() => setBriefOpen(true)} onStoryboard={() => setBoardOpen(true)}
+          captionChanges={d.captionReview ? parseCaptionReview(d.captionReview.text).reduce((n, x) => n + x.rows.length, 0) : null}
+          onFeature={(f) => (f.key === 'cut' ? setSilenceOpen('silence') : f.key === 'unwanted' ? setSilenceOpen('unwanted') : f.key === 'captions' && d.captionReview ? setCaptionsOpen(true) : say(f.text(id)))} onDraft={() => setBriefOpen(true)} onStoryboard={() => setBoardOpen(true)}
           onChanges={() => setChangesOpen(true)} onChat={() => setChatOpen((o) => !o)} onStop={stop} />
-        <Timeline data={timeline?.data ?? null} file={timeline?.file ?? null} video={onProgram ? video : null} player={video} programName={program?.name ?? null}
-          onNeedProgram={() => program && setView({ kind: 'video', path: program.path, name: program.name })} muted={muted} onMute={() => setMuted((m) => !m)} onAsk={askAboutClip} />
+        <Timeline data={timeline?.data ?? null} file={timeline?.file ?? null} srcPrefix={`projects/${id}/`} video={video} player={video}
+          viewPath={view?.kind === 'video' ? view.path : null} programPath={program?.path ?? null} programName={program?.name ?? null}
+          programFresh={programFresh} clock={clock} timelineMode={view?.kind === 'video' && !!view.timeline} live={liveOn ? live : null}
+          onOpen={openAt} muted={muted} onMute={() => setMuted((m) => !m)} onAsk={askAboutClip}
+          notice={tlNote} onDismiss={() => setTlNote(null)}
+          magnetic={magnetic} onMagnetic={toggleMagnetic}
+          markers={markers} onMarkers={(m) => { setMarkers(m); saving(bridge.call(`/api/p/state?id=${encodeURIComponent(id)}`, { markers: m })).catch(() => {}); }}
+          onEdit={async (ed) => {
+            try {
+              const r = await saving(bridge.call<{ message: string }>(`/api/p/timeline-edit?id=${encodeURIComponent(id)}`, { ...ed, magnetic }));
+              setTlNote({ text: r.message, undo: true });
+              await refresh();
+            } catch (e) { setTlNote({ text: (e as Error).message, error: true }); }
+          }}
+          onDropMedia={async (m, track, at) => {
+            try {
+              const r = await saving(bridge.call<{ message: string }>(`/api/p/timeline-add?id=${encodeURIComponent(id)}`, { path: m.path, track, at, magnetic }));
+              setTlNote({ text: r.message, undo: true });
+              await refresh();
+            } catch (e) { setTlNote({ text: (e as Error).message, error: true }); }
+          }}
+          onUndo={async () => {
+            try {
+              await saving(bridge.call(`/api/p/timeline-undo?id=${encodeURIComponent(id)}`, {}));
+              setTlNote({ text: 'Undone: the timeline is back to how it was.' });
+              await refresh();
+            } catch (e) { setTlNote({ text: (e as Error).message, error: true }); }
+          }} />
       </div>
 
       {briefOpen && <BriefDialog name={d.name} savedBrief={!!d.brief} onClose={() => setBriefOpen(false)} onStart={startDraft} />}
+      {captionsOpen && d.captionReview && <CaptionsDialog d={d} bridge={bridge} review={d.captionReview} blocked={running || !!d.busyElsewhere}
+        onClose={() => setCaptionsOpen(false)}
+        onRemake={() => { setCaptionsOpen(false); say(AI_FEATURES.find((f) => f.key === 'captions')!.text(id)); }}
+        onJump={(t) => { setCaptionsOpen(false); if (firstCut && !(view?.kind === 'video' && view.timeline)) playTimeline(); setTimeout(() => clock.seek(t), 400); }} />}
       {boardOpen && <StoryboardDialog d={d} bridge={bridge} draft={firstDraft} running={running} onClose={() => setBoardOpen(false)}
         onApprove={approveStoryboard} onChanges={() => setChangesOpen(true)} />}
       {changesOpen && <ChangesDialog stage={firstDraft?.stage} at={video && view?.kind === 'video' ? video.currentTime : null} atName={view?.name ?? ''}
         onClose={() => setChangesOpen(false)} onSend={sendChanges} />}
 
-      {silenceOpen && <SilencePopup d={d} bridge={bridge} source={timelineSource} onClose={() => setSilenceOpen(false)} onSaved={refresh}
+      {silenceOpen && <SilencePopup key={silenceOpen} mode={silenceOpen} d={d} bridge={bridge} source={silenceOpen === 'unwanted' ? unwantedSource : timelineSource} magnetic={magnetic} onClose={() => setSilenceOpen(false)} onSaved={refresh}
+        onApplied={(text) => { setSilenceOpen(false); setTlNote({ text, undo: true }); setSave({ state: 'saved', at: Date.now() }); refresh(); }} onSaving={saving}
         onUse={(text) => { setSilenceOpen(false); say(text); }} onOpenFile={(f) => setView({ kind: 'video', path: f, name: f.split('/').pop() ?? f, play: true })} />}
 
       {chatOpen && <Chat events={events} running={running} busyElsewhere={d.busyElsewhere} error={error} onSay={say} bridge={bridge} id={id} draft={draft} onDraftUsed={() => setDraft('')} onClose={() => setChatOpen(false)} onStop={stop} />}
@@ -531,19 +768,86 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
 // the edited video into raw/, the cut list and project file into work/. Then one click
 // tells the AI editor to use the new cut.
 type Saved = { kind: SilenceFileKind; path: string; state: 'saving' | 'saved' | 'failed'; error?: string };
-function SilencePopup({ d, bridge, source, onClose, onSaved, onUse, onOpenFile }: {
-  d: Detail; bridge: Bridge; source: { path: string; name: string; from: 'timeline' | 'preview' | 'footage' } | null;
-  onClose: () => void; onSaved: () => void; onUse: (text: string) => void; onOpenFile: (path: string) => void;
+type SilenceSource = {
+  path: string; name: string; from: 'timeline' | 'preview' | 'footage';
+  range?: { start: number; end: number } | null; // the part of the file the timeline uses (file seconds)
+  tlStart?: number; // where that footage starts on the timeline
+  cuts?: { path: string; from: number; to: number; at: number }[]; // joined footage: where each stretch comes from
+  build?: boolean; // several cuts: join the timeline's footage into one video first
+  applied?: boolean; // the timeline is what this session's last Apply made
+};
+function SilencePopup({ mode, d, bridge, source, magnetic, onClose, onSaved, onApplied, onSaving, onUse, onOpenFile }: {
+  mode: 'silence' | 'unwanted'; d: Detail; bridge: Bridge; source: SilenceSource | null; magnetic: boolean;
+  onClose: () => void; onSaved: () => void; onApplied: (text: string) => void; onSaving: <T>(p: Promise<T>) => Promise<T>; onUse: (text: string) => void; onOpenFile: (path: string) => void;
 }) {
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const [saved, setSaved] = useState<Saved[]>([]);
-  // The video is fixed for as long as the popup is open.
-  const [src] = useState(source);
+  // The video is fixed for as long as the popup is open. Several cuts: wait for the joined footage.
+  const [src, setSrc] = useState<SilenceSource | null>(source?.build ? null : source);
+  const [building, setBuilding] = useState<{ pct: number; error?: string } | null>(source?.build ? { pct: 0 } : null);
+  // Load the speech model now, so "Find unwanted parts" does not wait for it later.
+  useEffect(() => { warmSpeech(); }, []);
+  useEffect(() => {
+    if (!source?.build) return;
+    let stop = false;
+    const url = `/api/p/timeline-footage?id=${encodeURIComponent(d.id)}`;
+    (async () => {
+      try {
+        let st = await bridge.call<{ state: string; pct: number; path: string; error?: string }>(url, {});
+        while (!stop && st.state === 'running') {
+          setBuilding({ pct: st.pct });
+          await new Promise((r) => setTimeout(r, 1000));
+          st = await bridge.call(url);
+        }
+        if (stop) return;
+        if (st.state !== 'done') throw new Error(st.error || 'Could not join the timeline footage.');
+        setBuilding(null);
+        setSrc({ ...source, path: st.path, name: 'Timeline footage', build: false, range: null });
+      } catch (e) { if (!stop) setBuilding({ pct: 0, error: (e as Error).message }); }
+    })();
+    return () => { stop = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const link = useMemo<SilenceLink>(() => ({
     editorId: d.id,
-    source: src ? { path: src.path, name: src.name } : undefined,
+    mode: mode === 'unwanted' ? 'unwanted' : undefined,
+    source: src ? { path: src.path, name: src.name, range: src.range ?? null, cuts: src.cuts } : undefined,
+    // Whisper on this PC's graphics card, through the bridge (falls back to the browser if missing).
+    transcribe: async (path, range, onStage) => {
+      const id = encodeURIComponent(d.id);
+      let st = await bridge.call<{ key: string; state: string; stage: string; pct: number; words: Word[] | null; error: string | null }>(
+        `/api/p/transcribe?id=${id}`, { path, start: range?.start ?? 0, end: range?.end ?? 0 });
+      while (st.state === 'running') {
+        onStage(st.stage, st.pct);
+        await new Promise((r) => setTimeout(r, 700));
+        st = { ...(await bridge.call<typeof st>(`/api/p/transcribe?id=${id}&key=${encodeURIComponent(st.key)}`)), key: st.key };
+      }
+      if (st.state !== 'done' || !st.words) throw new Error(st.error || 'The speech engine did not finish.');
+      return st.words;
+    },
+    // Every auto-save of the session also goes into the project folder (work/editor/silence/).
+    saveSession: (rec) => { onSaving(bridge.call(`/api/p/silence-session?id=${encodeURIComponent(d.id)}`, { rec: { ...rec, vol: rec.vol ? toB64(rec.vol) : null } })).catch(() => {}); },
+    loadSessions: async () => (await bridge.call<{ sessions: (Omit<Rec, 'vol'> & { vol: string | null })[] }>(`/api/p/silence-sessions?id=${encodeURIComponent(d.id)}`)).sessions
+      .map((r) => ({ ...r, vol: r.vol ? fromB64(r.vol) : null }) as Rec),
+    // ffmpeg on this PC reads the sound for Whisper in seconds (the browser takes minutes).
+    sound16k: async (path, range) => {
+      const q = `id=${encodeURIComponent(d.id)}&path=${encodeURIComponent(path)}${range ? `&start=${range.start}&end=${range.end}` : ''}&t=${encodeURIComponent(bridge.token)}`;
+      const r = await fetch(`${BRIDGE}/api/p/sound16k?${q}`);
+      if (!r.ok) throw new Error(`Could not read the sound (${r.status}).`);
+      return new Float32Array(await r.arrayBuffer());
+    },
     onClose,
+    // The parts to keep (file seconds) become timeline seconds, and the bridge trims the cuts to them.
+    onApply: src?.from === 'timeline' ? async (keeps) => {
+      const shift = (src.tlStart ?? 0) - (src.range?.start ?? 0);
+      const r = await bridge.call<{ message: string }>(`/api/p/timeline-keep?id=${encodeURIComponent(d.id)}`, {
+        keeps: keeps.map((k) => [k.start + shift, k.end + shift]), magnetic, kind: mode,
+        // Remembered with the result, so opening this again shows this session and its work.
+        source: { path: src.path, name: src.name, range: src.range ?? null, tlStart: src.tlStart ?? 0 },
+      });
+      onApplied(r.message);
+      return r.message;
+    } : undefined,
     files: [...d.raw, ...d.out].filter((f) => f.kind === 'video' || f.kind === 'audio').map((f) => ({ path: f.path, name: f.name, size: f.size })),
     // Streams the file from D:\Editing with progress (large raw files can be over a gigabyte).
     load: async (path, onPct) => {
@@ -571,7 +875,7 @@ function SilencePopup({ d, bridge, source, onClose, onSaved, onUse, onOpenFile }
         .then(() => { setSaved((s) => s.map((x) => (x.path === path ? { ...x, state: 'saved' } : x))); onSaved(); })
         .catch((e) => setSaved((s) => s.map((x) => (x.path === path ? { ...x, state: 'failed', error: (e as Error).message } : x))));
     },
-  }), [d.id, d.raw, d.out, bridge, onSaved, src, onClose]);
+  }), [d.id, d.raw, d.out, bridge, onSaved, src, onClose, magnetic, onApplied, onSaving, mode]);
 
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('[role="dialog"][aria-modal="true"]')) onClose(); };
@@ -583,14 +887,18 @@ function SilencePopup({ d, bridge, source, onClose, onSaved, onUse, onOpenFile }
   const list = saved.filter((s) => s.kind === 'cut-list' && s.state === 'saved').pop();
 
   return (
-    <div className="fixed inset-0 z-[66] bg-black/40 p-2 sm:p-4 flex" role="dialog" aria-label="Silence remover">
+    <div className="fixed inset-0 z-[66] bg-black/40 p-2 sm:p-4 flex" role="dialog" aria-label={mode === 'unwanted' ? 'Find unwanted parts' : 'Silence remover'}>
       <div className="mx-auto w-full max-w-[1800px] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
         <header className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-st-line shrink-0">
-          <Scissors size={17} className="text-18-orange" aria-hidden />
+          {mode === 'unwanted' ? <ScanSearch size={17} className="text-18-orange" aria-hidden /> : <Scissors size={17} className="text-18-orange" aria-hidden />}
           <div className="mr-2 min-w-0">
-            <h2 className="font-semibold text-sm leading-tight">Remove pauses &amp; fillers</h2>
+            <h2 className="font-semibold text-sm leading-tight">{mode === 'unwanted' ? 'Find unwanted parts' : <>Remove pauses &amp; fillers</>}</h2>
             <p className="text-[11px] text-st-mute truncate">
-              {src ? <>Silence remover on <b className="text-st-ink">{src.path}</b> {src.from === 'timeline' ? 'from the timeline' : src.from === 'preview' ? '(the video in the preview)' : '(the raw footage)'}</> : 'Silence remover'} · exports are saved into <b className="text-st-ink">{d.name}</b>
+              {source?.from === 'timeline'
+                ? source.applied
+                  ? <>Your last result is on the timeline: <b className="text-st-ink">{source.range ? `${source.path} ${fmtTime(source.range.start)}–${fmtTime(source.range.end)}` : 'the timeline footage'}</b> · change anything and <b className="text-st-ink">Apply to timeline</b> again</>
+                  : <>Works on the timeline only: <b className="text-st-ink">{source.build ? 'its footage cuts, joined' : `${source.path} ${source.range ? `${fmtTime(source.range.start)}–${fmtTime(source.range.end)}` : ''}`}</b> · <b className="text-st-ink">Apply to timeline</b> puts the result back on it</>
+                : <>{src ? <>Silence remover on <b className="text-st-ink">{src.path}</b> {src.from === 'preview' ? '(the video in the preview)' : '(the raw footage)'}</> : 'Silence remover'} · exports are saved into <b className="text-st-ink">{d.name}</b></>}
             </p>
           </div>
           {/* The Silence remover puts its own buttons (Projects, Start, Settings, Export…) here. */}
@@ -599,7 +907,14 @@ function SilencePopup({ d, bridge, source, onClose, onSaved, onUse, onOpenFile }
         </header>
 
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {src ? <SilenceHome actions={slot} link={link} />
+          {building ? (
+            <div className={`${card} p-4 max-w-xl`} role="status">
+              {building.error ? <ErrorNote text={building.error} /> : <>
+                <p className="text-sm flex items-center gap-2"><Spinner /> Joining the timeline&apos;s footage cuts into one video, so only what is on the timeline is checked… {building.pct}%</p>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-st-surface"><div className="h-full bg-18-orange transition-[width]" style={{ width: `${building.pct}%` }} /></div>
+              </>}
+            </div>
+          ) : src ? <SilenceHome actions={slot} link={link} />
             : <p className="text-sm text-st-mute">This video has nothing on its timeline yet. Add footage under Media files → Footage, then open this again.</p>}
         </div>
 
@@ -687,7 +1002,14 @@ function MediaCard({ f, url, active, onOpen }: { f: FileInfo; url: string; activ
   const [broken, setBroken] = useState(false);
   const Icon = f.kind === 'video' ? Film : f.kind === 'audio' ? Music : f.kind === 'image' ? ImageIcon : FileText;
   return (
-    <button onClick={onOpen} title={`${f.name} · ${size(f.size)} · ${when(f.modified)}`}
+    <button onClick={onOpen} title={`${f.name} · ${size(f.size)} · ${when(f.modified)}${f.kind === 'video' || f.kind === 'image' || f.kind === 'audio' ? '\nDrag it onto the timeline to add it to the edit' : ''}`}
+      draggable={f.kind === 'video' || f.kind === 'image' || f.kind === 'audio'}
+      onDragStart={(e) => {
+        if (f.kind !== 'video' && f.kind !== 'image' && f.kind !== 'audio') return e.preventDefault();
+        e.dataTransfer.setData(DRAG_TYPE, JSON.stringify({ path: f.path, name: f.name, kind: f.kind }));
+        e.dataTransfer.setData(dragKindType(f.kind), '1');
+        e.dataTransfer.effectAllowed = 'copy';
+      }}
       className={`group w-full text-left rounded-lg overflow-hidden border bg-white transition ${active ? 'border-18-orange ring-2 ring-18-orange/30' : 'border-st-line hover:border-[#D4D4D4] hover:shadow-sm'}`}>
       <div className="relative aspect-video bg-[#1b1b1b] flex items-center justify-center overflow-hidden">
         {f.kind === 'video' && !broken && (
@@ -768,7 +1090,89 @@ function AddFootage({ d, bridge, onChange }: { d: Detail; bridge: Bridge; onChan
 }
 
 // ---------- preview player ----------
-function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical }: { width: number | null; d: Detail; bridge: Bridge; view: View | null; onVideo: (v: HTMLVideoElement | null) => void; program: FileInfo | null; onProgram: () => void; vertical: boolean }) {
+// Play / pause and a scrub bar over the timeline (the edit's length), used while the player plays the timeline.
+function TimelineControls({ clock, video }: { clock: Clock; video: HTMLVideoElement | null }) {
+  const { t, duration } = useSyncExternalStore(clock.sub, clock.get, clock.get);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    if (!video) return;
+    const on = () => setPlaying(!video.paused);
+    on();
+    video.addEventListener('play', on);
+    video.addEventListener('pause', on);
+    return () => { video.removeEventListener('play', on); video.removeEventListener('pause', on); };
+  }, [video]);
+  const toggle = () => {
+    if (!video) return;
+    if (!video.paused) return video.pause();
+    if (duration && t >= duration - 0.05) clock.seek(0); // at the end: start over
+    void video.play().catch(() => {});
+  };
+  return (
+    <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs">
+      <button onClick={toggle} className="p-1 rounded hover:bg-white/15" aria-label={playing ? 'Pause' : 'Play'}>
+        {playing ? <Square size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
+      </button>
+      <span className="tabular-nums shrink-0">{fmtTime(t)} / {fmtTime(duration)}</span>
+      <input type="range" min={0} max={duration || 0} step={0.01} value={Math.min(t, duration || 0)} aria-label="Timeline position"
+        onChange={(e) => clock.seek(Number(e.target.value))} className="flex-1 accent-[#F37335] cursor-pointer" />
+    </div>
+  );
+}
+
+// The live preview page from the bridge. It says "ready", gets the edit's props (again after
+// every change), and reports its time; the timeline drives it through `live`.
+function LivePreview({ bridge, live, props }: { bridge: Bridge; live: Live; props: Record<string, unknown> }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const st = useSyncExternalStore(live.sub, live.get, live.get);
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  useEffect(() => {
+    const on = (e: MessageEvent) => {
+      if (e.origin !== BRIDGE || e.source !== frame.current?.contentWindow || !e.data || typeof e.data !== 'object') return;
+      const m = e.data as { type: string; t?: number; playing?: boolean; duration?: number; message?: string };
+      if (m.type === 'ready') live.ready(e.source as Window, propsRef.current);
+      else if (m.type === 'state') live.set({ t: Number(m.t) || 0, playing: !!m.playing, duration: Number(m.duration) || 0 });
+      else if (m.type === 'error') live.set({ error: String(m.message || 'The live preview failed.') });
+    };
+    window.addEventListener('message', on);
+    return () => { window.removeEventListener('message', on); live.attach(null); };
+  }, [live]);
+  useEffect(() => { if (st.ready) live.post({ type: 'props', props }); }, [props, st.ready, live]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <>
+      <iframe ref={frame} title="Live preview with graphics" src={`${BRIDGE}/api/live/${encodeURIComponent(bridge.token)}/`} allow="autoplay; fullscreen"
+        className="absolute inset-0 w-full h-full border-0 bg-black" />
+      {!st.ready && !st.error && <p className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-white/70 pointer-events-none"><Spinner /> Loading the live preview…</p>}
+      {st.error && <p role="alert" className="absolute top-2 inset-x-2 text-xs bg-red-600/90 text-white rounded-md px-3 py-2">{st.error} Turn Graphics off to play the footage cuts.</p>}
+    </>
+  );
+}
+function LiveControls({ clock, live }: { clock: Clock; live: Live }) {
+  const { t, duration } = useSyncExternalStore(clock.sub, clock.get, clock.get);
+  const { playing } = useSyncExternalStore(live.sub, live.get, live.get);
+  const toggle = () => {
+    if (!playing && duration && t >= duration - 0.05) clock.seek(0); // at the end: start over
+    live.toggle();
+  };
+  return (
+    <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs">
+      <button onClick={toggle} className="p-1 rounded hover:bg-white/15" aria-label={playing ? 'Pause' : 'Play'}>
+        {playing ? <Square size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
+      </button>
+      <span className="tabular-nums shrink-0">{fmtTime(t)} / {fmtTime(duration)}</span>
+      <input type="range" min={0} max={duration || 0} step={0.01} value={Math.min(t, duration || 0)} aria-label="Timeline position"
+        onChange={(e) => clock.seek(Number(e.target.value))} className="flex-1 accent-[#F37335] cursor-pointer" />
+    </div>
+  );
+}
+
+function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical, clock, canPlayTimeline, onPlayTimeline, live, liveProps, canLive, graphics, onGraphics }: {
+  width: number | null; d: Detail; bridge: Bridge; view: View | null; onVideo: (v: HTMLVideoElement | null) => void; program: FileInfo | null; onProgram: () => void; vertical: boolean;
+  clock: Clock; canPlayTimeline: boolean; onPlayTimeline: () => void;
+  live: Live | null; liveProps: Record<string, unknown> | null; canLive: boolean; graphics: boolean; onGraphics: () => void;
+}) {
+  const tlMode = view?.kind === 'video' && !!view.timeline;
   // The frame is always the delivery size: 1920 × 1080 (16:9), or 1080 × 1920 for 9:16 Shorts.
   const [fw, fh] = vertical ? [1080, 1920] : [1920, 1080];
   const [doc, setDoc] = useState<string | null>(null);
@@ -787,13 +1191,30 @@ function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical 
   // A card click opens the file and plays it (also when that file is already open).
   const vid = useRef<HTMLVideoElement | null>(null);
   const setVid = useCallback((el: HTMLVideoElement | null) => { vid.current = el; onVideo(el); }, [onVideo]);
+  // The timeline can also open a file at a given time (start), e.g. the next footage cut.
   useEffect(() => {
-    if (view && view.kind !== 'doc' && view.play && vid.current) vid.current.play().catch(() => {});
-  }, [view]);
+    const v = vid.current;
+    if (!view || view.kind === 'doc' || !v) return;
+    const go = () => {
+      if (view.start != null) v.currentTime = view.start;
+      if (view.play && !live) v.play().catch(() => {});
+    };
+    if (v.readyState >= 1) go();
+    else { v.addEventListener('loadedmetadata', go, { once: true }); return () => v.removeEventListener('loadedmetadata', go); }
+  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <section className={`${card} flex flex-col min-h-[260px] lg:min-h-0 overflow-hidden`} style={width ? { width } : undefined} aria-label="Preview">
       <header className="flex items-center gap-2 px-3 h-11 border-b border-st-line shrink-0">
-        <span className="text-sm font-medium truncate flex-1" title={view?.name}>{view?.name ?? 'Preview'}</span>
+        <span className="text-sm font-medium truncate flex-1" title={view?.name}>
+          {tlMode ? <>Timeline <span className="text-st-mute font-normal">· {live ? 'live preview with graphics' : 'the edit as cut, without graphics'}</span></> : view?.name ?? 'Preview'}
+        </span>
+        {canLive && (
+          <button onClick={onGraphics} aria-pressed={graphics} className={`shrink-0 inline-flex items-center gap-1.5 text-xs rounded-full border px-2.5 py-1 ${graphics ? 'border-18-orange/40 text-18-orange bg-orange-50' : 'border-st-line text-st-mute hover:text-st-ink'}`}
+            title={graphics ? 'Graphics on: plays the edit with its whiteboards, cards and captions, live from the timeline. Click to play the footage cuts only (lighter; the volume meter follows it).' : 'Graphics off: the footage cuts only. Click to play the edit with its graphics, live from the timeline.'}>
+            <Sparkles size={12} aria-hidden /> Graphics {graphics ? 'on' : 'off'}
+          </button>
+        )}
+        {!tlMode && canPlayTimeline && <button onClick={onPlayTimeline} className="text-xs text-18-orange hover:underline shrink-0">Play timeline</button>}
         <span className="text-[11px] text-st-mute tabular-nums shrink-0" title="Frame size">{fw} × {fh}</span>
         {program && view?.path !== program.path && <button onClick={onProgram} className="text-xs text-18-orange hover:underline shrink-0">Show the edit</button>}
         {view && <a href={url} target="_blank" rel="noreferrer" className="p-1 text-st-mute hover:text-st-ink" aria-label="Open in a new tab"><Maximize2 size={15} /></a>}
@@ -805,8 +1226,11 @@ function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical 
         <div className="relative bg-black flex items-center justify-center overflow-hidden"
           style={{ aspectRatio: `${fw} / ${fh}`, width: `min(100cqw, calc(100cqh * ${fw} / ${fh}))` }}>
           {/* One video element for the whole session: the meter's audio graph stays attached to it. */}
-          <video ref={setVid} src={isVideo ? url : undefined} controls crossOrigin="anonymous" preload="metadata" playsInline
-            className={`w-full h-full object-contain ${isVideo ? '' : 'hidden'}`} />
+          {/* Playing the timeline: our own controls show timeline time, not the source file's. */}
+          <video ref={setVid} src={isVideo ? url : undefined} controls={!tlMode} crossOrigin="anonymous" preload="metadata" playsInline
+            className={`w-full h-full object-contain ${isVideo && !live ? '' : 'hidden'}`} />
+          {live && liveProps && <LivePreview bridge={bridge} live={live} props={liveProps} />}
+          {tlMode && (live ? <LiveControls clock={clock} live={live} /> : <TimelineControls clock={clock} video={vid.current} />)}
           {view?.kind === 'image' && (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={url} alt={view.name} className="w-full h-full object-contain" />
@@ -1078,9 +1502,25 @@ function BriefDialog({ name, savedBrief, onClose, onStart }: { name: string; sav
 function StoryboardDialog({ d, bridge, draft, running, onClose, onApprove, onChanges }: {
   d: Detail; bridge: Bridge; draft: FirstDraft | null; running: boolean; onClose: () => void; onApprove: () => void; onChanges: () => void;
 }) {
-  const all = [...d.out, ...d.workImages].filter(isSheet).sort((a, b) => b.modified - a.modified);
+  // Start to end: storyboard_1, storyboard_2 … in number order (they are written at almost the
+  // same moment, so file times can't order them), then the other sheets (opening transition,
+  // scenes) by name.
+  const isBoard = (f: FileInfo) => /storyboard/i.test(f.name);
+  const byName = (a: FileInfo, b: FileInfo) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  const all = [...d.out, ...d.workImages].filter(isSheet);
   const fresh = draft ? all.filter((f) => f.modified >= draft.startedAt - 2000) : [];
-  const sheets = fresh.length ? fresh : all;
+  const sheets = (fresh.length ? fresh : all).sort((a, b) => Number(isBoard(b)) - Number(isBoard(a)) || byName(a, b));
+  // The single frames behind the storyboard sheets: shown one by one (in order, with their time),
+  // so any frame can be opened, zoomed and stepped through. The storyboard_N sheets are then just
+  // these frames tiled, so they are left out; without the frames, the sheets themselves are shown.
+  const frames = d.frames ?? [];
+  const shownSheets = frames.length ? sheets.filter((f) => !isBoard(f)) : sheets;
+  const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  const items: ViewItem[] = [
+    ...frames.map((f, k) => ({ src: bridge.fileUrl(d.id, f.path), title: clock(f.t), sub: `Frame ${k + 1} of ${frames.length}` })),
+    ...shownSheets.map((f) => ({ src: bridge.fileUrl(d.id, f.path), title: f.name, sub: when(f.modified) })),
+  ];
+  const [view, setView] = useState<number | null>(null);
   const pending = draft?.stage === 'storyboard';
   return (
     <Modal wide title="Storyboard" onClose={onClose}
@@ -1090,29 +1530,260 @@ function StoryboardDialog({ d, bridge, draft, running, onClose, onApprove, onCha
         {pending && <button onClick={onChanges} disabled={running} className={btnGhost}><PenLine size={15} aria-hidden /> Request changes</button>}
         {pending && <button onClick={onApprove} disabled={running} className={btn}><CheckCircle2 size={15} aria-hidden /> Approve and edit the 1st draft</button>}
       </>}>
-      {sheets.length ? (
-        <div className="space-y-6">
-          {sheets.map((f) => (
+      {items.length ? (
+        <div className="space-y-8">
+          {frames.length > 0 && (
+            <section aria-label="Storyboard frames">
+              <p className="text-xs text-st-mute mb-3">{frames.length} frames, start to end. Click a frame to view it large, zoom in, and step through with ← →.</p>
+              <ol className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-5">
+                {frames.map((f, k) => (
+                  <li key={f.path}>
+                    <button onClick={() => setView(k)} className="group block w-full text-left rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-18-orange"
+                      aria-label={`View frame at ${clock(f.t)}`}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={items[k].src} alt="" loading="lazy" className="w-full aspect-video object-contain bg-st-surface rounded-md border-2 border-st-ink group-hover:border-18-orange transition-colors" />
+                      <span className="block mt-1.5 text-sm font-semibold tabular-nums">{clock(f.t)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+          {shownSheets.map((f, j) => (
             <figure key={f.path}>
               <figcaption className="flex items-center gap-2 text-sm mb-2">
                 <span className="font-medium">{f.name}</span>
                 <span className="text-xs text-st-mute">{when(f.modified)}</span>
-                <a href={bridge.fileUrl(d.id, f.path)} target="_blank" rel="noreferrer" className="ml-auto p-1 text-st-mute hover:text-st-ink" aria-label={`Open ${f.name} full size`}><Maximize2 size={15} /></a>
               </figcaption>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={bridge.fileUrl(d.id, f.path)} alt={f.name} className="w-full rounded-lg border border-st-line" />
+              <button onClick={() => setView(frames.length + j)} className="block w-full rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-18-orange" aria-label={`View ${f.name} large`}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={items[frames.length + j].src} alt={f.name} loading="lazy" className="w-full rounded-lg border border-st-line hover:border-18-orange transition-colors" />
+              </button>
             </figure>
           ))}
         </div>
       ) : <p className="text-sm text-st-mute">No storyboard sheets yet. They appear here once the 1st draft has made them.</p>}
+      {view !== null && items[view] && <ImageViewer items={items} index={view} onIndex={setView} onClose={() => setView(null)} />}
     </Modal>
+  );
+}
+
+// ---------- captions review ----------
+// work/caption_review.md (written by the skill's caption_review.py after the .srt): one table per
+// srt checked, `| # | Before (speech-to-text) | After (caption) | Change | Note |`, each Before / After
+// cell = "00:05:15,580 --> 00:05:17,200<br>text". Shown as a table with the words that changed marked.
+type CueRow = { n: string; t0: number | null; t1: number | null; time: string; afterTime: string; before: string; after: string; change: string; note: string };
+type CueSection = { title: string; finalTimeline: boolean; rows: CueRow[]; notes: string };
+const srtSec = (s: string) => { const m = s.match(/(\d+):(\d+):(\d+)[,.](\d+)/); return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / 1000 : null; };
+function splitCell(c: string) {
+  const [head, ...rest] = c.split(/<br\s*\/?>/i);
+  return /-->/.test(head) ? { time: head.trim(), text: rest.join(' ').trim() } : { time: '', text: c.trim() };
+}
+function parseCaptionReview(md: string): CueSection[] {
+  const out: CueSection[] = [];
+  const start = (title: string): CueSection => { const x = { title, finalTimeline: !/raw/i.test(title), rows: [] as CueRow[], notes: '' }; out.push(x); return x; };
+  for (const line of md.replace(/\r/g, '').split('\n')) {
+    if (/^#{1,4}\s/.test(line)) { start(line.replace(/^#+\s*/, '').trim()); continue; }
+    const sec: CueSection = out[out.length - 1] ?? start('Captions');
+    if (/^\s*\|/.test(line)) {
+      const c = line.trim().replace(/^\||\|$/g, '').split('|').map((x) => x.trim());
+      if (/^:?-{2,}/.test(c[0]) || c[0] === '#' || c.length < 3) continue;
+      const b = splitCell(c[1] ?? ''), a = splitCell(c[2] ?? '');
+      const [from, to] = (b.time || a.time).split('-->').map((x) => x.trim());
+      sec.rows.push({ n: c[0], t0: from ? srtSec(from) : null, t1: to ? srtSec(to) : null, time: b.time || a.time, afterTime: a.time && a.time !== b.time ? a.time : '',
+        before: b.text, after: a.text, change: c[3] ?? '', note: c[4] ?? '' });
+    } else if (line.trim()) sec.notes += line + '\n';
+  }
+  return out.filter((x) => x.rows.length || x.notes.trim());
+}
+// Word-level difference (longest common subsequence): the words only in `a` are marked.
+function diffWords(a: string, b: string): { w: string; changed: boolean }[] {
+  const A = a.split(/\s+/).filter(Boolean), B = b.split(/\s+/).filter(Boolean);
+  const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+  const L = Array.from({ length: A.length + 1 }, () => new Array<number>(B.length + 1).fill(0));
+  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--) L[i][j] = norm(A[i]) === norm(B[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const res: { w: string; changed: boolean }[] = [];
+  let i = 0, j = 0;
+  while (i < A.length) {
+    if (j < B.length && norm(A[i]) === norm(B[j])) { res.push({ w: A[i], changed: A[i] !== B[j] }); i++; j++; }
+    else if (j < B.length && L[i][j + 1] >= L[i + 1][j]) j++;
+    else { res.push({ w: A[i], changed: true }); i++; }
+  }
+  return res;
+}
+const CHANGE_STYLE: Record<string, string> = {
+  corrected: 'bg-amber-50 text-amber-800 border-amber-200',
+  added: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+  removed: 'bg-red-50 text-red-700 border-red-200',
+};
+function CaptionsDialog({ d, bridge, review, blocked, onClose, onRemake, onJump }: {
+  d: Detail; bridge: Bridge; review: { text: string; modified: number }; blocked: boolean; onClose: () => void; onRemake: () => void; onJump: (t: number) => void;
+}) {
+  const sections = useMemo(() => parseCaptionReview(review.text), [review.text]);
+  const kinds = useMemo(() => {
+    const k = new Map<string, number>();
+    for (const s of sections) for (const r of s.rows) for (const c of r.change.split(/[,/]/).map((x) => x.trim().toLowerCase()).filter(Boolean)) k.set(c, (k.get(c) ?? 0) + 1);
+    return [...k.entries()];
+  }, [sections]);
+  const [only, setOnly] = useState<string | null>(null);
+  const [q, setQ] = useState('');
+  const srts = d.out.filter((f) => /\.srt$/i.test(f.name));
+  const total = sections.reduce((n, s) => n + s.rows.length, 0);
+  const match = (r: CueRow) => (!only || r.change.toLowerCase().includes(only)) && (!q.trim() || `${r.before} ${r.after} ${r.note}`.toLowerCase().includes(q.trim().toLowerCase()));
+  const chip = (c: string) => <span key={c} className={`inline-block rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${CHANGE_STYLE[c.toLowerCase()] ?? 'bg-st-surface text-st-ink border-st-line'}`}>{c}</span>;
+  const mark = (parts: { w: string; changed: boolean }[], cls: string) => parts.map((p, k) => <span key={k}>{k ? ' ' : ''}{p.changed ? <mark className={cls}>{p.w}</mark> : p.w}</span>);
+  return (
+    <Modal wide title="Captions review" onClose={onClose}
+      sub={<>Every caption that differs from the speech-to-text: {total} {total === 1 ? 'change' : 'changes'}. Words marked red were taken out or changed, green is what the caption says now. Updated {when(review.modified)}.</>}
+      footer={<>
+        {srts.map((f) => <a key={f.path} href={bridge.fileUrl(d.id, f.path, true)} className={btnGhost}><Download size={15} aria-hidden /> {f.name}</a>)}
+        <button onClick={onRemake} disabled={blocked} className={btnGhost} title={blocked ? 'Wait until the AI editor has finished' : 'Ask the AI editor to make the captions and this review again'}><RefreshCw size={15} aria-hidden /> Make captions again</button>
+        <button onClick={onClose} className={btn}>Done</button>
+      </>}>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div role="group" aria-label="Show changes of type" className="flex flex-wrap gap-1.5">
+          <button onClick={() => setOnly(null)} aria-pressed={!only} className={`${pill} ${!only ? 'bg-st-ink text-white border-st-ink' : 'border-st-line text-st-ink hover:border-st-ink/40'}`}>All {total}</button>
+          {kinds.map(([k, n]) => (
+            <button key={k} onClick={() => setOnly(only === k ? null : k)} aria-pressed={only === k}
+              className={`${pill} capitalize ${only === k ? 'bg-st-ink text-white border-st-ink' : 'border-st-line text-st-ink hover:border-st-ink/40'}`}>{k} {n}</button>
+          ))}
+        </div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search words…" aria-label="Search the captions" className={`${field} !min-h-[34px] !py-1.5 ml-auto max-w-[14rem]`} />
+      </div>
+      <div className="space-y-6">
+        {sections.map((s, si) => {
+          const rows = s.rows.filter(match);
+          return (
+            <section key={si} aria-label={s.title}>
+              {(sections.length > 1 || s.title !== 'Captions') && <h3 className="text-sm font-semibold mb-2">{s.title}</h3>}
+              {s.rows.length > 0 && (rows.length ? (
+                <div className="overflow-x-auto rounded-lg border border-st-line">
+                  <table className="w-full text-sm border-collapse min-w-[760px]">
+                    <thead className="bg-st-surface text-xs text-st-mute">
+                      <tr>
+                        <th className="text-left font-semibold px-3 py-2 w-10">#</th>
+                        <th className="text-left font-semibold px-3 py-2 w-[9.5rem]">Time</th>
+                        <th className="text-left font-semibold px-3 py-2">Before (speech-to-text)</th>
+                        <th className="text-left font-semibold px-3 py-2">After (caption)</th>
+                        <th className="text-left font-semibold px-3 py-2 w-28">Change</th>
+                        <th className="text-left font-semibold px-3 py-2 w-48">Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => (
+                        <tr key={r.n + r.time} className="border-t border-st-line align-top">
+                          <td className="px-3 py-2.5 text-st-mute tabular-nums">{r.n}</td>
+                          <td className="px-3 py-2.5 text-xs tabular-nums whitespace-nowrap">
+                            {s.finalTimeline && r.t0 != null ? (
+                              <button onClick={() => onJump(r.t0!)} className="inline-flex items-center gap-1 text-18-orange hover:underline" title="Play this moment on the timeline">
+                                <Play size={11} fill="currentColor" aria-hidden /> {r.time.split('-->')[0].trim()}
+                              </button>
+                            ) : <span>{r.time.split('-->')[0].trim()}</span>}
+                            <span className="block text-st-mute">to {r.time.split('-->')[1]?.trim()}</span>
+                            {r.afterTime && <span className="block text-st-mute mt-1" title="The caption's own time">caption: {r.afterTime}</span>}
+                          </td>
+                          <td className="px-3 py-2.5 text-st-mute leading-relaxed">{mark(diffWords(r.before, r.after), 'bg-red-100 text-red-800 line-through decoration-red-400 rounded px-0.5')}</td>
+                          <td className="px-3 py-2.5 leading-relaxed">{mark(diffWords(r.after, r.before), 'bg-emerald-100 text-emerald-900 rounded px-0.5')}</td>
+                          <td className="px-3 py-2.5"><span className="flex flex-wrap gap-1">{r.change.split(/,\s*/).filter(Boolean).map(chip)}</span></td>
+                          <td className="px-3 py-2.5 text-xs text-st-mute">{r.note}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <p className="text-sm text-st-mute">No changes match.</p>)}
+              {s.notes.trim() && <div className="mt-3"><Md text={s.notes} /></div>}
+            </section>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}
+
+// A full-screen picture viewer: previous / next (buttons or ← →), zoom (buttons, + − 0, the
+// mouse wheel at the pointer, or double-click), and drag to move around a zoomed picture.
+// Esc closes only the viewer, not the dialog under it.
+type ViewItem = { src: string; title: string; sub?: string };
+function ImageViewer({ items, index, onIndex, onClose }: { items: ViewItem[]; index: number; onIndex: (k: number) => void; onClose: () => void }) {
+  const [z, setZ] = useState({ s: 1, x: 0, y: 0 });
+  const stage = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
+  const item = items[index];
+  const go = useCallback((k: number) => { if (k >= 0 && k < items.length) onIndex(k); }, [items.length, onIndex]);
+  useEffect(() => setZ({ s: 1, x: 0, y: 0 }), [index]);
+  // Zoom to scale s, keeping the point (px, py) (from the stage centre) where it is.
+  const zoomAt = useCallback((s: number, px = 0, py = 0) => setZ((o) => {
+    const n = Math.min(8, Math.max(1, s));
+    if (n === 1) return { s: 1, x: 0, y: 0 };
+    return { s: n, x: px - ((px - o.x) * n) / o.s, y: py - ((py - o.y) * n) / o.s };
+  }), []);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const k = e.key;
+      if (k === 'Escape') onClose();
+      else if (k === 'ArrowLeft') go(index - 1);
+      else if (k === 'ArrowRight') go(index + 1);
+      else if (k === '+' || k === '=') setZ((o) => ({ ...o, s: Math.min(8, o.s * 1.5) }));
+      else if (k === '-' || k === '_') zoomAt(z.s / 1.5);
+      else if (k === '0') zoomAt(1);
+      else return;
+      e.preventDefault(); e.stopPropagation();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [go, index, onClose, z.s, zoomAt]);
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAt(z.s * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2);
+    };
+    el.addEventListener('wheel', wheel, { passive: false });
+    return () => el.removeEventListener('wheel', wheel);
+  }, [z.s, zoomAt]);
+  // Load the neighbours too, so stepping is instant.
+  useEffect(() => { for (const k of [index - 1, index + 1]) if (items[k]) new Image().src = items[k].src; }, [index, items]);
+  const arrow = 'absolute top-1/2 -translate-y-1/2 z-10 p-3 rounded-full bg-black/50 text-white hover:bg-black/75 disabled:opacity-25 disabled:cursor-default';
+  const tool = 'p-2 rounded-lg text-white/80 hover:text-white hover:bg-white/10 disabled:opacity-30';
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-label={`${item.title}${item.sub ? `, ${item.sub}` : ''}`} className="fixed inset-0 z-[90] bg-black/90 flex flex-col select-none">
+      <header className="flex items-center gap-2 px-4 py-2.5 text-white shrink-0">
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold tabular-nums truncate">{item.title}</p>
+          {item.sub && <p className="text-xs text-white/60">{item.sub}</p>}
+        </div>
+        <button onClick={() => zoomAt(z.s / 1.5)} disabled={z.s <= 1} className={tool} aria-label="Zoom out (−)" title="Zoom out (−)"><ZoomOut size={18} /></button>
+        <button onClick={() => zoomAt(1)} className="px-2 py-1 rounded-lg text-xs tabular-nums text-white/80 hover:bg-white/10 w-14" title="Fit to screen (0)">{Math.round(z.s * 100)}%</button>
+        <button onClick={() => setZ((o) => ({ ...o, s: Math.min(8, o.s * 1.5) }))} disabled={z.s >= 8} className={tool} aria-label="Zoom in (+)" title="Zoom in (+)"><ZoomIn size={18} /></button>
+        <a href={item.src} target="_blank" rel="noreferrer" className={tool} aria-label="Open full size in a new tab" title="Open full size in a new tab"><Maximize2 size={17} /></a>
+        <button onClick={onClose} className={tool} aria-label="Close viewer (Esc)" title="Close (Esc)"><X size={20} /></button>
+      </header>
+      <div ref={stage} className={`relative flex-1 min-h-0 overflow-hidden flex items-center justify-center ${z.s > 1 ? (drag.current ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-zoom-in'}`}
+        onDoubleClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); zoomAt(z.s > 1 ? 1 : 2.5, e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2); }}
+        onPointerDown={(e) => { if (z.s <= 1 || (e.target as HTMLElement).closest('button')) return; drag.current = { px: e.clientX, py: e.clientY, x: z.x, y: z.y }; e.currentTarget.setPointerCapture(e.pointerId); }}
+        onPointerMove={(e) => { const g = drag.current; if (g) setZ((o) => ({ ...o, x: g.x + e.clientX - g.px, y: g.y + e.clientY - g.py })); }}
+        onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
+        <button onClick={() => go(index - 1)} disabled={index === 0} className={`${arrow} left-4`} aria-label="Previous frame (←)" title="Previous (←)"><ChevronLeft size={26} /></button>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img key={item.src} src={item.src} alt={item.title} draggable={false} className="max-w-[calc(100%-8rem)] max-h-full object-contain"
+          style={{ transform: `translate(${z.x}px, ${z.y}px) scale(${z.s})`, transition: drag.current ? 'none' : 'transform 120ms ease-out' }} />
+        <button onClick={() => go(index + 1)} disabled={index === items.length - 1} className={`${arrow} right-4`} aria-label="Next frame (→)" title="Next (→)"><ChevronRight size={26} /></button>
+      </div>
+      <p className="text-center text-xs text-white/50 py-2 shrink-0" aria-hidden>{index + 1} / {items.length} · ← → to step · scroll or double-click to zoom · drag to move</p>
+    </div>,
+    document.body,
   );
 }
 
 // Request changes: plain words, like a message to Claude. "Insert time" adds the player's
 // current time, so changes can point at a moment ("at 0:24 move the card left").
-function ChangesDialog({ stage, at, atName, onClose, onSend }: { stage: FirstDraft['stage'] | undefined; at: number | null; atName: string; onClose: () => void; onSend: (t: string) => void }) {
+function ChangesDialog({ stage, at, atName, onClose, onSend }: { stage: FirstDraft['stage'] | undefined; at: number | null; atName: string; onClose: () => void; onSend: (t: string, forFuture: boolean) => void }) {
   const [text, setText] = useState('');
+  const [future, setFuture] = useState(false);
+  const send = () => { if (text.trim()) onSend(text.trim(), future); };
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { box.current?.focus(); }, []);
   const stamp = at == null ? '' : `${Math.floor(at / 60)}:${String(Math.floor(at % 60)).padStart(2, '0')}`;
@@ -1130,7 +1801,7 @@ function ChangesDialog({ stage, at, atName, onClose, onSend }: { stage: FirstDra
       sub={stage === 'storyboard' || stage === 'storyboard-working' ? 'The AI editor makes the changes and remakes the storyboard for your approval.' : stage === 'draft' || stage === 'draft-working' ? 'The AI editor makes the changes and renders the 1st draft again.' : 'Sent to the AI editor as a message.'}
       footer={<>
         <button onClick={onClose} className={btnGhost}>Cancel</button>
-        <button onClick={() => text.trim() && onSend(text.trim())} disabled={!text.trim()} className={btn}><Send size={15} aria-hidden /> Send changes</button>
+        <button onClick={send} disabled={!text.trim()} className={btn}><Send size={15} aria-hidden /> Send changes</button>
       </>}>
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">
@@ -1138,9 +1809,18 @@ function ChangesDialog({ stage, at, atName, onClose, onSend }: { stage: FirstDra
           {at != null && <button type="button" onClick={insert} className="inline-flex items-center gap-1 text-xs text-18-orange hover:underline"><Clock size={12} aria-hidden /> Insert time {stamp}</button>}
         </div>
         <textarea id="changes-text" ref={box} rows={9} value={text} onChange={(e) => setText(e.target.value)} className={`${field} resize-y`}
-          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && text.trim()) onSend(text.trim()); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send(); }}
           placeholder={'Write it the way you would tell Claude. e.g.\n• At 0:24 move the card to the left, it covers the face\n• The whiteboard at 1:11 should finish drawing before the cut\n• Remove the zoom at the start\n• Spell it 18startup, not 18 Startup'} />
         <p className="text-[11px] text-st-mute">Ctrl+Enter sends.</p>
+        <label className="flex items-start gap-2.5 mt-3 p-3 rounded-lg border border-st-line hover:bg-st-surface cursor-pointer">
+          <input type="checkbox" checked={future} onChange={(e) => setFuture(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[#F37335] shrink-0" aria-describedby="changes-future-help" />
+          <span>
+            <span className="block text-sm font-medium">Save this for future videos too</span>
+            <span id="changes-future-help" className="block text-xs text-st-mute mt-0.5">
+              Also writes this change into the editing skill as a rule, so every new video follows it. The AI editor tells you the exact rule it added. Leave it off for fixes that only fit this video.
+            </span>
+          </span>
+        </label>
       </div>
     </Modal>
   );
@@ -1148,8 +1828,8 @@ function ChangesDialog({ stage, at, atName, onClose, onSend }: { stage: FirstDra
 
 // ---------- AI features bar ----------
 const pill = 'shrink-0 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium border transition disabled:opacity-40 disabled:cursor-not-allowed';
-function AiBar({ running, busyElsewhere, draft, chatOpen, unread, onFeature, onDraft, onStoryboard, onChanges, onChat, onStop }: {
-  running: boolean; busyElsewhere: string | null; draft: FirstDraft | null; chatOpen: boolean; unread: boolean;
+function AiBar({ running, busyElsewhere, draft, chatOpen, unread, captionChanges, onFeature, onDraft, onStoryboard, onChanges, onChat, onStop }: {
+  running: boolean; busyElsewhere: string | null; draft: FirstDraft | null; chatOpen: boolean; unread: boolean; captionChanges: number | null;
   onFeature: (f: (typeof AI_FEATURES)[number]) => void; onDraft: () => void; onStoryboard: () => void; onChanges: () => void; onChat: () => void; onStop: () => void;
 }) {
   const blocked = running || !!busyElsewhere;
@@ -1170,9 +1850,18 @@ function AiBar({ running, busyElsewhere, draft, chatOpen, unread, onFeature, onD
           {(st === 'storyboard-working' || st === 'draft-working') && running ? <Spinner /> : <Wand2 size={13} aria-hidden />} {draftLabel}
         </button>
         {AI_FEATURES.map((f) => (
-          <button key={f.key} onClick={() => onFeature(f)} disabled={blocked} className={`${pill} border-st-line text-st-ink hover:border-18-orange/50 hover:text-18-orange`}>
-            {f.label}
-          </button>
+          // Once the captions are made, this opens their before/after review (also while the AI works).
+          f.key === 'captions' && captionChanges != null ? (
+            <button key={f.key} onClick={() => onFeature(f)} title="Open the captions review: every caption that differs from the speech-to-text, before and after"
+              className={`${pill} border-st-line text-st-ink hover:border-18-orange/50 hover:text-18-orange`}>
+              <CheckCircle2 size={13} className="text-emerald-600" aria-hidden /> Captions review
+              <span className="rounded-full bg-st-surface border border-st-line px-1.5 text-[10px] tabular-nums">{captionChanges}</span>
+            </button>
+          ) : (
+            <button key={f.key} onClick={() => onFeature(f)} disabled={blocked} className={`${pill} border-st-line text-st-ink hover:border-18-orange/50 hover:text-18-orange`}>
+              {f.label}
+            </button>
+          )
         ))}
         <button onClick={onStoryboard} disabled={!storyboardOpen} title={storyboardOpen ? 'Open the storyboard' : 'Unlocks when the 1st draft has made its storyboard'}
           className={`${pill} border-st-line text-st-ink hover:border-18-orange/50 hover:text-18-orange`}>
@@ -1193,7 +1882,7 @@ function AiBar({ running, busyElsewhere, draft, chatOpen, unread, onFeature, onD
 }
 
 // ---------- timeline ----------
-type Clip = { id: string; track: TrackKey; kind: string; text: string; start: number; end: number };
+type Clip = { id: string; track: TrackKey; kind: string; text: string; start: number; end: number; ref: { key: string; index: number } };
 type TrackKey = 'V1' | 'V2' | 'CC' | 'A1';
 const TRACKS: { key: TrackKey; name: string; color: string; audio?: boolean }[] = [
   { key: 'V2', name: 'Graphics', color: 'bg-18-orange/85 border-[#D9601F]' },
@@ -1207,7 +1896,13 @@ const KIND: Record<string, string> = {
   zooms: 'Zoom', screenshots: 'Screenshot', tamBoard: 'Market board', tamSummary: 'Market recap', columnFocus: 'Column focus', captions: 'Caption',
   sfx: 'SFX', splitIntro: 'Opener', pip: 'Speaker PiP', timer: 'Timer',
 };
-const V1_KEYS = new Set(['segments', 'broll', 'splitScreens']);
+const V1_KEYS = new Set(['segments', 'splitScreens']); // B-roll cutaways sit on V2, over the footage
+
+// Drag and drop from Media files onto the timeline.
+const DRAG_TYPE = 'application/x-studio-media';
+const dragKindType = (k: string) => `application/x-studio-kind-${k}`;
+type DropMedia = { path: string; name: string; kind: 'video' | 'image' | 'audio' };
+const DROP_TRACK: Record<DropMedia['kind'], TrackKey[]> = { video: ['V1', 'V2'], image: ['V2'], audio: ['A1'] };
 type Obj = { [k: string]: unknown };
 const isObj = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -1229,34 +1924,34 @@ function buildClips(data: Obj): { clips: Clip[]; duration: number } {
   const fps = num(data.fps) ?? 30;
   let duration = num(data.durationInFrames) ? (data.durationInFrames as number) / fps : 0;
   const clips: Clip[] = [];
-  const add = (track: TrackKey, kind: string, text: string, start: number, end: number) => clips.push({ id: `${track}-${clips.length}`, track, kind, text, start, end: Math.max(end, start + 0.05) });
+  const add = (track: TrackKey, kind: string, text: string, start: number, end: number, key: string, index: number) => clips.push({ id: `${track}-${clips.length}`, track, kind, text, start, end: Math.max(end, start + 0.05), ref: { key, index } });
 
   const segs = Array.isArray(data.segments) ? data.segments.filter(isObj) : [];
   let pos = num(data.introPreroll) ?? 0;
-  for (const sg of segs) {
+  segs.forEach((sg, i) => {
     const from = num(sg.from) ?? 0, to = num(sg.to) ?? from;
-    add('V1', 'Footage', `${base(sg.src)} ${fmtTime(from)}–${fmtTime(to)}`, pos, pos + (to - from));
-    add('A1', 'Voice', base(sg.src), pos, pos + (to - from));
+    add('V1', 'Footage', `${base(sg.src)} ${fmtTime(from)}–${fmtTime(to)}`, pos, pos + (to - from), 'segments', i);
+    add('A1', 'Voice', base(sg.src), pos, pos + (to - from), 'segments', i);
     pos += to - from;
-  }
-  if (!segs.length && typeof data.src === 'string') add('V1', 'Footage', base(data.src), 0, duration);
+  });
+  if (!segs.length && typeof data.src === 'string') add('V1', 'Footage', base(data.src), 0, duration, 'src', -1);
 
   for (const [key, v] of Object.entries(data)) {
     if (key === 'segments' || key === 'sfx' || key === 'music') continue;
     const list = Array.isArray(v) ? v : isObj(v) ? [v] : [];
-    for (const it of list) {
-      if (!isObj(it)) continue;
+    list.forEach((it, index) => {
+      if (!isObj(it)) return;
       const start = num(it.start), end = num(it.end);
-      if (start == null || end == null) continue;
+      if (start == null || end == null) return;
       const kind = isObj(it) && key === 'scenes' && typeof it.kind === 'string' ? `Scene (${it.kind})` : KIND[key] ?? key;
-      add(key === 'captions' ? 'CC' : V1_KEYS.has(key) ? 'V1' : 'V2', kind, describe(it), start, end);
-    }
+      add(key === 'captions' ? 'CC' : V1_KEYS.has(key) ? 'V1' : 'V2', kind, describe(it), start, end, key, Array.isArray(v) ? index : -1);
+    });
   }
 
-  if (typeof data.audio === 'string') add('A1', 'Voice', base(data.audio), 0, duration);
+  if (typeof data.audio === 'string') add('A1', 'Voice', base(data.audio), 0, duration, 'audio', -1);
   const music = isObj(data.music) ? data.music : null;
-  if (music?.src) add('A1', 'Music', base(music.src), 0, duration);
-  if (Array.isArray(data.sfx)) for (const fx of data.sfx) if (isObj(fx) && num(fx.at) != null) add('A1', 'SFX', base(fx.src), fx.at as number, (fx.at as number) + 0.6);
+  if (music?.src) add('A1', 'Music', base(music.src), 0, duration, 'music', -1);
+  if (Array.isArray(data.sfx)) data.sfx.forEach((fx, i) => { if (isObj(fx) && num(fx.at) != null) add('A1', 'SFX', base(fx.src), fx.at as number, (fx.at as number) + 0.6, 'sfx', i); });
 
   for (const c of clips) duration = Math.max(duration, c.end);
   return { clips, duration };
@@ -1282,14 +1977,50 @@ function typingOrDialog(e: KeyboardEvent): boolean {
   return !!document.querySelector('[role="dialog"]');
 }
 
-function Timeline({ data, file, video, player, programName, onNeedProgram, muted, onMute, onAsk }: {
-  data: Obj | null; file: string | null; video: HTMLVideoElement | null; player: HTMLVideoElement | null; programName: string | null;
-  onNeedProgram: () => void; muted: boolean; onMute: () => void; onAsk: (c: Clip) => void;
+// How the timeline and the player stay in step:
+//  - player shows the rendered edit ("program") -> its time IS the timeline time
+//  - player shows a source file the footage cuts use (e.g. raw/raw.mp4) -> source time is mapped
+//    through the cuts (segments) to timeline time, and playing runs cut to cut like a real edit
+//  - player shows something else -> clicking the timeline opens the up-to-date render, else the
+//    footage cut under the click, at the matching moment
+type Seg = { rel: string | null; from: number; to: number; start: number; end: number };
+
+type TimelineEdit = { op: 'split' | 'delete'; key: string; index: number; at?: number } | { op: 'delete-many'; items: { key: string; index: number }[] };
+
+// A small tooltip under a toolbar button: its name and its shortcut, shown on hover or keyboard focus.
+function Tip({ label, keys, children, wide }: { label: string; keys?: string; children: React.ReactNode; wide?: boolean }) {
+  return (
+    <span className="relative group inline-flex">
+      {children}
+      <span role="tooltip" className={`pointer-events-none absolute top-full z-40 mt-1.5 rounded-md bg-st-ink px-2 py-1 text-[11px] font-normal leading-snug text-white opacity-0 shadow-lg transition-opacity delay-150 group-hover:opacity-100 group-focus-within:opacity-100 ${wide ? 'right-0 w-72 whitespace-pre-line' : 'left-1/2 -translate-x-1/2 whitespace-nowrap'}`}>
+        {label}{keys && <kbd className="ml-1.5 rounded bg-white/20 px-1 font-sans">{keys}</kbd>}
+      </span>
+    </span>
+  );
+}
+
+function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath, programFresh, programName, clock, timelineMode, live: liveCtl, onOpen, muted, onMute, onAsk, onDropMedia, notice, onUndo, onDismiss, magnetic, onMagnetic, markers, onMarkers, onEdit }: {
+  data: Obj | null; file: string | null; srcPrefix: string; video: HTMLVideoElement | null; player: HTMLVideoElement | null;
+  viewPath: string | null; programPath: string | null; programFresh: boolean; programName: string | null; clock: Clock; timelineMode: boolean; live: Live | null;
+  onOpen: (path: string, start: number, play: boolean) => void; muted: boolean; onMute: () => void; onAsk: (c: Clip) => void;
+  onDropMedia: (m: DropMedia, track: TrackKey, at: number) => void;
+  notice: { text: string; error?: boolean; undo?: boolean } | null; onUndo: () => void; onDismiss: () => void;
+  magnetic: boolean; onMagnetic: () => void; markers: number[]; onMarkers: (m: number[]) => void; onEdit: (e: TimelineEdit) => void;
 }) {
   const { clips, duration } = useMemo(() => (data ? buildClips(data) : { clips: [], duration: 0 }), [data]);
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
   const [locked, setLocked] = useState<Record<string, boolean>>({});
-  const [sel, setSel] = useState<Clip | null>(null);
+  // Selected clips (by id). One clip shows its details below the timeline; several can be deleted together.
+  const [selIds, setSelIds] = useState<string[]>([]);
+  const selClips = useMemo(() => clips.filter((c) => selIds.includes(c.id)), [clips, selIds]);
+  const sel = selClips.length === 1 ? selClips[0] : null;
+  const setSel = (c: Clip | null) => setSelIds(c ? [c.id] : []);
+  useEffect(() => { setSelIds([]); }, [clips]); // clips are renumbered after every change
+  const [box, setBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null); // drag-select rectangle (page px)
+  const dragged = useRef(false);
+  const [tool, setTool] = useState<'select' | 'cut'>('select');
+  const [hoverCut, setHoverCut] = useState<number | null>(null); // cut tool: where a click would cut
+  const lanesRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(0); // px per second; 0 = fit
   const [width, setWidth] = useState(800);
   const [t, setT] = useState(0);
@@ -1301,33 +2032,175 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
     const ro = new ResizeObserver(() => setWidth(el.clientWidth - HEAD_W));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [data == null]); // the scroller only exists once there is a timeline
 
-  // Follow the player (only when it shows the rendered edit the timeline describes).
+  // The footage cuts in timeline order, with the source file each one plays (relative path).
+  const segs = useMemo<Seg[]>(() => {
+    if (!data) return [];
+    let pos = num(data.introPreroll) ?? 0;
+    return (Array.isArray(data.segments) ? data.segments.filter(isObj) : []).map((s) => {
+      const from = num(s.from) ?? 0, to = num(s.to) ?? from;
+      const src = typeof s.src === 'string' ? s.src.replace(/\\/g, '/') : '';
+      const seg = { rel: src.startsWith(srcPrefix) ? src.slice(srcPrefix.length) : null, from, to, start: pos, end: pos + (to - from) };
+      pos = seg.end;
+      return seg;
+    });
+  }, [data, srcPrefix]);
+  const mode: 'live' | 'program' | 'source' | 'none' = liveCtl ? 'live'
+    : viewPath && viewPath === programPath ? 'program' : viewPath && segs.some((s) => s.rel === viewPath) ? 'source' : 'none';
+  // Live preview: the playhead follows its time.
   useEffect(() => {
-    if (!video) return;
-    let raf = 0;
-    const tick = () => { setT(video.currentTime); if (!video.paused) raf = requestAnimationFrame(tick); };
-    const onPlay = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
-    const onSeek = () => setT(video.currentTime);
+    if (!liveCtl) return;
+    setOutside(false);
+    const f = () => setT(liveCtl.get().t);
+    f();
+    return liveCtl.sub(f);
+  }, [liveCtl]);
+  const curSeg = useRef(0); // the cut the player is in (source mode)
+  const [outside, setOutside] = useState(false); // source mode: the player is on a part that is cut out
+
+  // Follow the player, and in source mode play cut to cut.
+  useEffect(() => {
+    if (!video || mode === 'none' || mode === 'live') return;
+    const map = (): number | null => {
+      const ts = video.currentTime;
+      if (mode === 'program') return ts;
+      const inSeg = (s: Seg | undefined) => !!s && s.rel === viewPath && ts >= s.from - 0.05 && ts <= s.to + 0.05;
+      if (!inSeg(segs[curSeg.current])) {
+        const i = segs.findIndex(inSeg);
+        if (i < 0) return null;
+        curSeg.current = i;
+      }
+      const s = segs[curSeg.current];
+      return s.start + Math.min(ts, s.to) - s.from;
+    };
+    const update = () => {
+      const m = map();
+      setOutside(m == null);
+      if (m != null) setT(m);
+      // Playing the timeline and the player is on a part that is cut out: go to the next cut.
+      if (mode === 'source' && timelineMode && m == null) {
+        const ts = video.currentTime;
+        const i = segs.findIndex((x) => x.rel === viewPath && x.from >= ts - 0.05);
+        const n = i >= 0 ? segs[i] : segs[curSeg.current + 1];
+        if (!n || !n.rel) { video.pause(); return; }
+        curSeg.current = i >= 0 ? i : curSeg.current + 1;
+        if (n.rel === viewPath) video.currentTime = n.from;
+        else onOpen(n.rel, n.from, !video.paused);
+        return;
+      }
+      // End of this cut while playing: go on to the next one, in this file or the next.
+      if (mode === 'source' && timelineMode && !video.paused && m != null) {
+        const s = segs[curSeg.current];
+        if (video.currentTime >= s.to - 0.04) {
+          const n = segs[curSeg.current + 1];
+          if (!n) { video.pause(); return; }
+          curSeg.current += 1;
+          if (n.rel === viewPath) video.currentTime = n.from;
+          else if (n.rel) onOpen(n.rel, n.from, true);
+          else video.pause();
+        }
+      }
+    };
+    // A short interval while playing (requestAnimationFrame stalls in background tabs).
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const onPlay = () => { if (!timer) timer = setInterval(update, 40); };
+    const onPause = () => { if (timer) { clearInterval(timer); timer = null; } update(); };
     video.addEventListener('play', onPlay);
-    video.addEventListener('seeked', onSeek);
-    video.addEventListener('timeupdate', onSeek);
-    setT(video.currentTime);
-    return () => { cancelAnimationFrame(raf); video.removeEventListener('play', onPlay); video.removeEventListener('seeked', onSeek); video.removeEventListener('timeupdate', onSeek); };
-  }, [video]);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('seeked', update);
+    video.addEventListener('timeupdate', update);
+    video.addEventListener('loadedmetadata', update);
+    update();
+    if (!video.paused) onPlay();
+    return () => {
+      if (timer) clearInterval(timer);
+      video.removeEventListener('play', onPlay); video.removeEventListener('pause', onPause);
+      video.removeEventListener('seeked', update); video.removeEventListener('timeupdate', update); video.removeEventListener('loadedmetadata', update);
+    };
+  }, [video, mode, segs, viewPath, onOpen, timelineMode]);
 
   const pps = zoom || (duration ? Math.max(2, width / duration) : 10);
   const total = Math.max(width, duration * pps);
   const seek = (sec: number) => {
     const s = Math.max(0, Math.min(duration, sec));
     setT(s);
-    if (video) video.currentTime = s;
-    else onNeedProgram();
+    if (mode === 'live' && liveCtl) { liveCtl.seek(s); return; }
+    if (mode === 'program' && video) { video.currentTime = s; return; }
+    if (mode === 'none' && programFresh && programPath) { onOpen(programPath, s, false); return; }
+    // The footage cut under this point (before the first cut: the first; past the last: the last).
+    if (!segs.length) { if (programPath) onOpen(programPath, s, false); return; }
+    let i = segs.findIndex((x) => s >= x.start && s < x.end);
+    if (i < 0) i = s < segs[0].start ? 0 : segs.length - 1;
+    const g = segs[i];
+    curSeg.current = i;
+    const ts = Math.max(g.from, Math.min(g.to, g.from + (s - g.start)));
+    if (g.rel && g.rel === viewPath && video && timelineMode) video.currentTime = ts;
+    else if (g.rel) onOpen(g.rel, ts, !!video && !video.paused);
   };
+
+  // Share the clock with the player's timeline controls.
+  useEffect(() => { clock.set({ t, duration }); }, [clock, t, duration]);
+  useEffect(() => { clock.setSeek(seek); });
+  // After a cut, delete or drop, put the player back on the timeline at the same moment.
+  const lastSegs = useRef(segs);
+  useEffect(() => {
+    if (lastSegs.current === segs) return;
+    lastSegs.current = segs;
+    if (timelineMode && segs.length) seek(Math.min(t, segs[segs.length - 1].end - 0.01));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segs]);
   const xToSec = (e: React.MouseEvent<HTMLElement>) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     return (e.clientX - r.left) / pps;
+  };
+
+  // ---- drag and drop from Media files ----
+  // Where a dropped video lands on V1: the cut points between footage cuts (it is inserted there).
+  const segBounds = useMemo(() => {
+    if (!data) return [0];
+    let pos = num(data.introPreroll) ?? 0;
+    const b = [pos];
+    for (const s of Array.isArray(data.segments) ? data.segments.filter(isObj) : []) { pos += (num(s.to) ?? 0) - (num(s.from) ?? 0); b.push(pos); }
+    return b;
+  }, [data]);
+  const [drop, setDrop] = useState<{ track: TrackKey; at: number; ok: boolean; label: string } | null>(null);
+  const dragKind = (e: React.DragEvent): DropMedia['kind'] | null => {
+    for (const k of ['video', 'image', 'audio'] as const) if (e.dataTransfer.types.includes(dragKindType(k))) return k;
+    return null;
+  };
+  const target = (e: React.DragEvent<HTMLElement>) => {
+    const kind = dragKind(e);
+    if (!kind) return null;
+    const r = e.currentTarget.getBoundingClientRect();
+    let at = Math.max(0, Math.min(duration || Infinity, (e.clientX - r.left) / pps));
+    const row = (e.target as HTMLElement).closest('[data-track]') as HTMLElement | null;
+    const track = (row?.dataset.track as TrackKey | undefined) ?? 'V1';
+    const name = TRACKS.find((x) => x.key === track)?.name ?? track;
+    if (locked[track]) return { track, at, ok: false, label: `${track} is locked` };
+    if (!DROP_TRACK[kind].includes(track))
+      return { track, at, ok: false, label: kind === 'image' ? 'Images go on V2' : kind === 'audio' ? 'Audio goes on A1' : `Videos go on V1 or V2, not ${name}` };
+    if (track === 'V1') {
+      at = segBounds.reduce((best, b) => (Math.abs(b - at) < Math.abs(best - at) ? b : best), segBounds[0]);
+      return { track, at, ok: true, label: `Insert footage at ${fmtTime(at)}` };
+    }
+    if (track === 'V2') return { track, at, ok: true, label: `B-roll at ${fmtTime(at)}` };
+    return { track, at, ok: true, label: `Sound at ${fmtTime(at)} (long audio = music)` };
+  };
+  const dragOver = (e: React.DragEvent<HTMLElement>) => {
+    const d = target(e);
+    if (!d) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = d.ok ? 'copy' : 'none';
+    setDrop((p) => (p && p.track === d.track && Math.abs(p.at - d.at) < 0.05 && p.ok === d.ok ? p : d));
+  };
+  const dragLeave = (e: React.DragEvent<HTMLElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null); };
+  const dropIt = (e: React.DragEvent<HTMLElement>) => {
+    const d = target(e);
+    setDrop(null);
+    if (!d?.ok) return;
+    e.preventDefault();
+    try { onDropMedia(JSON.parse(e.dataTransfer.getData(DRAG_TYPE)) as DropMedia, d.track, d.at); } catch {}
   };
 
   // Edit points for ← / →: every clip start and end on the visible picture and audio tracks
@@ -1335,12 +2208,44 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
   const cuts = useMemo(() => {
     const set = new Set<number>([0, Math.round(duration * 100) / 100]);
     for (const c of clips) if (c.track !== 'CC' && !hidden[c.track]) { set.add(Math.round(c.start * 100) / 100); set.add(Math.round(c.end * 100) / 100); }
+    for (const m of markers) set.add(Math.round(m * 100) / 100);
     return [...set].filter((s) => s <= duration).sort((a, b) => a - b);
-  }, [clips, hidden, duration]);
+  }, [clips, hidden, duration, markers]);
+
+  // ---- tools ----
+  const fps = (data && num(data.fps)) || 30;
+  const snapFrame = (x: number) => Math.round(x * fps) / fps;
+  const canDelete = (c: Clip) => c.ref.index >= 0 || c.ref.key === 'music';
+  const deleteClip = (c: Clip) => { if (!canDelete(c) || locked[c.track]) return; setSel(null); onEdit({ op: 'delete', key: c.ref.key, index: c.ref.index }); };
+  // Delete everything selected in one go (one Undo). A footage cut and its sound are the same clip.
+  const deleteSelected = (list: Clip[]) => {
+    const ok = list.filter((c) => canDelete(c) && !locked[c.track]);
+    if (!ok.length) return;
+    if (ok.length === 1) return deleteClip(ok[0]);
+    const seen = new Set<string>();
+    const items = ok.map((c) => c.ref).filter((r) => { const k = `${r.key}:${r.index}`; if (seen.has(k)) return false; seen.add(k); return true; });
+    setSelIds([]);
+    onEdit({ op: 'delete-many', items });
+  };
+  // Shift+A: every clip from the playhead on. Shift+Ctrl+A: every clip before it. Hidden or locked tracks are left out.
+  const selectFrom = (at: number, forward: boolean) => {
+    // A clip that only touches the playhead (ends or starts within ~1 frame of it) belongs to the other side.
+    const pick = clips.filter((c) => !hidden[c.track] && !locked[c.track] && (forward ? c.end > at + 0.04 : c.start < at - 0.04));
+    setSelIds(pick.map((c) => c.id));
+  };
+  const toggleMarker = (at: number) => {
+    const near = markers.find((m) => Math.abs(m - at) < 0.15);
+    onMarkers(near != null ? markers.filter((m) => m !== near) : [...markers, Math.round(at * 100) / 100].sort((a, b) => a - b));
+  };
+  const lanesSec = (clientX: number) => {
+    const r = lanesRef.current?.getBoundingClientRect();
+    return r ? Math.max(0, Math.min(duration, (clientX - r.left) / pps)) : 0;
+  };
 
   // Latest values for the window listeners, so they are bound once.
-  const live = useRef({ t, pps, cuts, player, seek, zoom });
-  live.current = { t, pps, cuts, player, seek, zoom };
+  const selectAll = () => setSelIds(clips.filter((c) => !hidden[c.track] && !locked[c.track]).map((c) => c.id));
+  const live = useRef({ t, pps, cuts, player, liveCtl, seek, zoom, selClips, deleteSelected, toggleMarker, selectFrom, selectAll });
+  live.current = { t, pps, cuts, player, liveCtl, seek, zoom, selClips, deleteSelected, toggleMarker, selectFrom, selectAll };
 
   // Keep the playhead in view after a jump.
   const reveal = (sec: number) => {
@@ -1353,11 +2258,25 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
   // Space = play / pause, ← / → = previous / next cut.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Shift+A / Shift+Ctrl+A: select all clips forward / backward from the playhead.
+      if (e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'a' || e.key === 'A') && !typingOrDialog(e)) {
+        e.preventDefault();
+        live.current.selectFrom(live.current.t, !e.ctrlKey);
+        return;
+      }
+      // Ctrl+A: every clip on the timeline (instead of selecting the page's text).
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'a' || e.key === 'A') && !typingOrDialog(e)) {
+        e.preventDefault();
+        live.current.selectAll();
+        return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey || typingOrDialog(e)) return;
       const L = live.current;
       if (e.code === 'Space') {
         e.preventDefault();
-        if (e.repeat || !L.player) return;
+        if (e.repeat) return;
+        if (L.liveCtl) { L.liveCtl.toggle(); return; }
+        if (!L.player) return;
         if (L.player.paused) void L.player.play().catch(() => {}); else L.player.pause();
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
         if (!L.cuts.length) return;
@@ -1366,7 +2285,11 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
         if (next == null) return;
         L.seek(next);
         reveal(next);
-      }
+      } else if (e.key === 'v' || e.key === 'V') { setTool('select'); setHoverCut(null); }
+      else if (e.key === 'c' || e.key === 'C') setTool('cut');
+      else if (e.key === 'm' || e.key === 'M') { if (!e.repeat) L.toggleMarker(L.t); }
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && L.selClips.length) { e.preventDefault(); L.deleteSelected(L.selClips); }
+      else if (e.key === 'Escape' && L.selClips.length) setSelIds([]);
     };
     // A focused button would also "click" on the Space key-up.
     const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space' && !typingOrDialog(e)) e.preventDefault(); };
@@ -1411,16 +2334,25 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
 
   const byTrack = useMemo(() => Object.fromEntries(TRACKS.map((tr) => [tr.key, lanes(clips.filter((c) => c.track === tr.key))])) as Record<TrackKey, Clip[][]>, [clips]);
 
+  const dropRow = drop ? (drop.ok ? drop.track : `!${drop.track}`) : null; // the row being dropped on, tinted
+
   // The clip blocks are memoised so the moving playhead does not re-render hundreds of clips.
   const body = useMemo(() => TRACKS.map((tr) => {
     const ls = byTrack[tr.key];
     const shown = ls.length ? ls.slice(0, tr.key === 'CC' ? 1 : 5) : [[]];
     return (
-      <div key={tr.key} className={`relative border-b border-st-line ${hidden[tr.key] ? 'opacity-30' : ''}`} style={{ height: shown.length * LANE_H + 8 }}>
+      <div key={tr.key} data-track={tr.key} className={`relative border-b border-st-line ${hidden[tr.key] ? 'opacity-30' : ''} ${dropRow === tr.key ? 'bg-emerald-50' : dropRow === `!${tr.key}` ? 'bg-red-50' : ''}`} style={{ height: shown.length * LANE_H + 8 }}>
         {shown.map((lane, li) => lane.map((c) => (
           <button key={c.id} type="button" title={`${c.kind} · ${fmtTime(c.start)}–${fmtTime(c.end)}${c.text ? `\n${c.text}` : ''}`}
-            onClick={(e) => { e.stopPropagation(); if (!locked[tr.key]) { setSel(c); seek(c.start); } }}
-            className={`absolute rounded-[4px] border text-[10px] leading-[16px] px-1 truncate text-left text-white ${tr.color} ${sel?.id === c.id ? 'ring-2 ring-st-ink ring-offset-1' : ''} ${locked[tr.key] ? 'cursor-not-allowed' : 'hover:brightness-110'}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (locked[tr.key]) return;
+              if (tool === 'cut') { setSel(null); onEdit({ op: 'split', key: c.ref.key, index: c.ref.index, at: snapFrame(lanesSec(e.clientX)) }); return; }
+              if (e.shiftKey) { setSelIds((ids) => (ids.includes(c.id) ? ids.filter((x) => x !== c.id) : [...ids, c.id])); return; }
+              setSel(c); seek(c.start);
+            }}
+            data-clip={c.id}
+            className={`absolute rounded-[4px] border text-[10px] leading-[16px] px-1 truncate text-left text-white ${tr.color} ${selIds.includes(c.id) ? 'ring-2 ring-st-ink ring-offset-1' : ''} ${locked[tr.key] ? 'cursor-not-allowed' : tool === 'cut' ? 'cursor-crosshair' : 'hover:brightness-110'}`}
             style={{ left: c.start * pps, width: Math.max(2, (c.end - c.start) * pps - 1), top: 4 + li * LANE_H, height: LANE_H - 3 }}>
             {(c.end - c.start) * pps > 36 ? (tr.key === 'CC' ? c.text : `${c.kind}${c.text ? ` · ${c.text}` : ''}`) : ''}
           </button>
@@ -1428,25 +2360,79 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
       </div>
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [byTrack, pps, hidden, locked, sel]);
+  }), [byTrack, pps, hidden, locked, selIds, dropRow, tool]);
 
   return (
     <section className={`${card} lg:col-span-2 flex flex-col min-h-[200px] max-h-[340px] overflow-hidden`} aria-label="Timeline">
       <header className="flex items-center gap-2 px-3 h-10 border-b border-st-line shrink-0 text-xs">
         <span className="font-semibold text-st-ink">Timeline</span>
         <span className="text-st-mute tabular-nums">{fmtTime(t)} / {fmtTime(duration)}</span>
-        {file && <span className="text-st-mute truncate hidden sm:inline">· from {file}{programName ? ` · plays ${programName}` : ''}</span>}
+        {data && (
+          <div className="flex items-center gap-1 ml-1" role="toolbar" aria-label="Timeline tools">
+            <div className="flex items-center rounded-lg bg-st-surface p-0.5">
+              {([['select', 'Select tool', MousePointer2, 'V'], ['cut', 'Cut tool', Scissors, 'C']] as const).map(([k, name, Icon, key]) => (
+                <Tip key={k} label={name} keys={key}>
+                  <button onClick={() => { setTool(k); setHoverCut(null); }} aria-pressed={tool === k} aria-label={`${name} (${key})`}
+                    className={`inline-flex items-center rounded-md p-1.5 ${tool === k ? 'bg-white text-st-ink shadow-sm' : 'text-st-mute hover:text-st-ink'}`}>
+                    <Icon size={14} aria-hidden />
+                  </button>
+                </Tip>
+              ))}
+            </div>
+            <Tip label={magnetic ? 'Magnetic timeline: on' : 'Magnetic timeline: off'}>
+              <button onClick={onMagnetic} aria-pressed={magnetic} aria-label={magnetic ? 'Magnetic timeline: on' : 'Magnetic timeline: off'}
+                className={`inline-flex items-center rounded-md p-1.5 ${magnetic ? 'bg-18-orange/10 text-18-orange' : 'text-st-mute hover:text-st-ink hover:bg-st-surface'}`}>
+                <Magnet size={14} aria-hidden />
+              </button>
+            </Tip>
+            <Tip label="Add marker" keys="M">
+              <button onClick={() => toggleMarker(t)} aria-label="Add marker (M)" className="inline-flex items-center rounded-md p-1.5 text-st-mute hover:text-st-ink hover:bg-st-surface">
+                <Flag size={14} aria-hidden />
+              </button>
+            </Tip>
+          </div>
+        )}
         <div className="flex-1" />
-        <span className="hidden md:inline-flex items-center gap-1 text-st-mute cursor-help" title={'Space: play / pause\n← / →: previous / next cut\nAlt + scroll: zoom in / out\nShift + scroll: move left / right'}>
-          <Keyboard size={14} aria-hidden /> Shortcuts
-        </span>
+        <Tip wide label={'Shortcuts\nV  Select tool · C  Cut tool · M  Marker\nDrag  select clips (Shift adds)\nCtrl+A  select all clips\nShift+A  select all clips forward\nShift+Ctrl+A  select all clips backward\nDelete  remove the selected clips · Esc  clear\nSpace  play / pause · ← / →  previous / next cut\nAlt+scroll  zoom · Shift+scroll  move'}>
+          <span tabIndex={0} className="hidden md:inline-flex items-center rounded-md p-1.5 text-st-mute hover:text-st-ink cursor-help" aria-label="Keyboard shortcuts">
+            <Keyboard size={14} aria-hidden />
+          </span>
+        </Tip>
         <button onClick={() => setZoom((z) => Math.max(1, (z || pps) / 1.6))} className="p-1 rounded text-st-mute hover:text-st-ink hover:bg-st-surface" aria-label="Zoom out"><Minus size={14} /></button>
         <button onClick={() => setZoom(0)} className="px-1.5 py-0.5 rounded text-st-mute hover:text-st-ink hover:bg-st-surface">Fit</button>
         <button onClick={() => setZoom((z) => Math.min(400, (z || pps) * 1.6))} className="p-1 rounded text-st-mute hover:text-st-ink hover:bg-st-surface" aria-label="Zoom in"><Plus size={14} /></button>
       </header>
 
+      {notice && (
+        <div className={`flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-st-line text-xs shrink-0 ${notice.error ? 'bg-red-50 text-red-800' : 'bg-emerald-50 text-emerald-900'}`} role="status">
+          <span className="flex-1 min-w-[12rem]">{notice.text}</span>
+          {notice.undo && <button onClick={onUndo} className="rounded-full border border-current/30 px-2.5 py-0.5 font-medium hover:bg-white/60">Undo</button>}
+          <button onClick={onDismiss} className="p-0.5 opacity-70 hover:opacity-100" aria-label="Dismiss"><X size={13} /></button>
+        </div>
+      )}
       {!data ? (
-        <p className="p-4 text-sm text-st-mute">The timeline fills in once the editor builds the edit (work/edit.json): cuts, whiteboard scenes, cards, captions, music and SFX, at their real times.</p>
+        // No edit yet: the whole area takes a first video as the opening footage.
+        <div className="flex-1 m-3 rounded-lg border-2 border-dashed grid place-items-center p-4 text-center text-sm transition-colors"
+          style={{ borderColor: drop ? (drop.ok ? '#10b981' : '#ef4444') : undefined }}
+          onDragOver={(e) => {
+            const k = dragKind(e);
+            if (!k) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = k === 'video' ? 'copy' : 'none';
+            setDrop({ track: 'V1', at: 0, ok: k === 'video', label: k === 'video' ? 'Start the edit with this footage' : 'Start with a video; add images and audio after' });
+          }}
+          onDragLeave={dragLeave}
+          onDrop={(e) => {
+            const k = dragKind(e);
+            setDrop(null);
+            if (k !== 'video') return;
+            e.preventDefault();
+            try { onDropMedia(JSON.parse(e.dataTransfer.getData(DRAG_TYPE)) as DropMedia, 'V1', 0); } catch {}
+          }}>
+          <p className={drop ? (drop.ok ? 'text-emerald-700 font-medium' : 'text-red-700 font-medium') : 'text-st-mute'}>
+            {drop ? drop.label : 'Drag footage here from Media files to start the edit, or use Create 1st draft and the AI editor builds it.'}
+          </p>
+        </div>
       ) : (
         <div ref={scroller} className="flex-1 overflow-auto relative">
           <div className="flex" style={{ width: HEAD_W + total }}>
@@ -1476,13 +2462,67 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
             </div>
 
             {/* Ruler + lanes */}
-            <div className="relative" style={{ width: total }} onClick={(e) => seek(xToSec(e))}>
+            <div ref={lanesRef} className="relative select-none" style={{ width: total, cursor: tool === 'cut' ? 'crosshair' : undefined }}
+              onClick={(e) => { if (dragged.current) { dragged.current = false; return; } seek(xToSec(e)); }}
+              onMouseDown={(e) => {
+                // Select tool: drag from an empty spot to draw a box; every clip it touches is selected (Shift adds).
+                if (tool !== 'select' || e.button !== 0 || (e.target as HTMLElement).closest('[data-clip]')) return;
+                const x0 = e.clientX, y0 = e.clientY, add = e.shiftKey, base = add ? selIds : [];
+                let moved = false;
+                const move = (ev: MouseEvent) => {
+                  if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+                  moved = true;
+                  const r = { x0, y0, x1: ev.clientX, y1: ev.clientY };
+                  setBox(r);
+                  const L = Math.min(r.x0, r.x1), R = Math.max(r.x0, r.x1), T = Math.min(r.y0, r.y1), B = Math.max(r.y0, r.y1);
+                  const hits = [...(lanesRef.current?.querySelectorAll<HTMLElement>('[data-clip]') ?? [])].filter((el) => {
+                    const b = el.getBoundingClientRect();
+                    return b.right >= L && b.left <= R && b.bottom >= T && b.top <= B;
+                  }).map((el) => el.dataset.clip!).filter((id) => { const c = clips.find((x) => x.id === id); return !!c && !locked[c.track] && !hidden[c.track]; });
+                  setSelIds([...new Set([...base, ...hits])]);
+                };
+                const up = () => {
+                  window.removeEventListener('mousemove', move);
+                  window.removeEventListener('mouseup', up);
+                  setBox(null);
+                  if (moved) dragged.current = true; // the click that follows is not a seek
+                };
+                window.addEventListener('mousemove', move);
+                window.addEventListener('mouseup', up);
+              }}
+              onMouseMove={tool === 'cut' ? (e) => setHoverCut(snapFrame(lanesSec(e.clientX))) : undefined} onMouseLeave={() => setHoverCut(null)}
+              onDragOver={dragOver} onDragLeave={dragLeave} onDrop={dropIt}>
               <div className="h-6 border-b border-st-line relative text-[10px] text-st-mute cursor-pointer bg-st-surface">
                 {ticks.map((s) => (
                   <span key={s} className="absolute top-0 h-full border-l border-st-line/80 pl-1 tabular-nums" style={{ left: s * pps }}>{fmtTime(s).replace(/\.0$/, '')}</span>
                 ))}
+                {markers.map((m, i) => (
+                  <button key={m} type="button" onClick={(e) => { e.stopPropagation(); seek(m); }} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onMarkers(markers.filter((x) => x !== m)); }}
+                    title={`Marker ${i + 1} · ${fmtTime(m)}\nClick: jump here · Right-click: remove`} aria-label={`Marker ${i + 1} at ${fmtTime(m)}`}
+                    className="absolute top-0 z-20 -translate-x-1/2 flex flex-col items-center text-[9px] font-bold text-white" style={{ left: m * pps }}>
+                    <span className="rounded-sm bg-amber-500 px-1 leading-[14px]">{i + 1}</span>
+                    <span className="h-0 w-0 border-x-[4px] border-x-transparent border-t-[5px] border-t-amber-500" />
+                  </button>
+                ))}
               </div>
               {body}
+              {markers.map((m) => <div key={`l${m}`} className="absolute top-6 bottom-0 w-px bg-amber-400/70 pointer-events-none z-[5]" style={{ left: m * pps }} />)}
+              {box && lanesRef.current && (() => {
+                const r = lanesRef.current.getBoundingClientRect();
+                return <div className="absolute z-30 pointer-events-none border border-18-orange bg-18-orange/10 rounded-sm"
+                  style={{ left: Math.min(box.x0, box.x1) - r.left, top: Math.min(box.y0, box.y1) - r.top, width: Math.abs(box.x1 - box.x0), height: Math.abs(box.y1 - box.y0) }} />;
+              })()}
+              {tool === 'cut' && hoverCut != null && (
+                <div className="absolute top-0 bottom-0 w-px border-l border-dashed border-st-ink pointer-events-none z-20" style={{ left: hoverCut * pps }}>
+                  <span className={`absolute top-0.5 whitespace-nowrap rounded bg-st-ink px-1.5 py-0.5 text-[10px] font-semibold text-white ${hoverCut * pps > total - 90 ? 'right-1' : 'left-1'}`}>Cut {fmtTime(hoverCut)}</span>
+                </div>
+              )}
+              {drop && (
+                // Where the drop lands (green) or why it can't (red).
+                <div className={`absolute top-0 bottom-0 w-0.5 pointer-events-none z-20 ${drop.ok ? 'bg-emerald-500' : 'bg-red-500'}`} style={{ left: drop.at * pps }}>
+                  <span className={`absolute top-0.5 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold text-white shadow ${drop.ok ? 'bg-emerald-600' : 'bg-red-600'} ${drop.at * pps > total - 180 ? 'right-1' : 'left-1'}`}>{drop.label}</span>
+                </div>
+              )}
               <div className="absolute top-0 bottom-0 w-px bg-red-500 pointer-events-none z-10" style={{ left: t * pps }}>
                 <span className="absolute -top-0 -left-[5px] h-2.5 w-2.5 bg-red-500 rotate-45" />
               </div>
@@ -1491,11 +2531,25 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
         </div>
       )}
 
+      {selClips.length > 1 && (
+        <footer className="flex flex-wrap items-center gap-2 px-3 py-2 border-t border-st-line text-xs shrink-0 bg-st-surface">
+          <span className="font-semibold">{selClips.length} clips selected</span>
+          <span className="text-st-mute tabular-nums">{fmtTime(Math.min(...selClips.map((c) => c.start)))}–{fmtTime(Math.max(...selClips.map((c) => c.end)))}</span>
+          <span className="flex-1" />
+          <button onClick={() => deleteSelected(selClips)} title={magnetic ? 'Remove them all; footage after them moves earlier (Delete key)' : 'Remove them all (Delete key)'}
+            className="inline-flex items-center gap-1 rounded-full border border-st-line bg-white px-2.5 py-1 font-medium hover:border-red-300 hover:text-red-700"><Trash2 size={12} aria-hidden /> Delete all</button>
+          <button onClick={() => setSelIds([])} className="p-1 text-st-mute hover:text-st-ink" aria-label="Clear selection"><X size={14} /></button>
+        </footer>
+      )}
       {sel && (
         <footer className="flex flex-wrap items-center gap-2 px-3 py-2 border-t border-st-line text-xs shrink-0 bg-st-surface">
           <span className="font-semibold">{sel.kind}</span>
           <span className="text-st-mute tabular-nums">{fmtTime(sel.start)}–{fmtTime(sel.end)}</span>
           <span className="truncate flex-1 min-w-[8rem]" title={sel.text}>{sel.text}</span>
+          {canDelete(sel) && (
+            <button onClick={() => deleteClip(sel)} title={sel.ref.key === 'segments' ? (magnetic ? 'Remove this footage; everything after it moves earlier (Delete key)' : 'Remove this footage; graphics keep their times (Delete key)') : 'Remove this clip (Delete key)'}
+              className="inline-flex items-center gap-1 rounded-full border border-st-line bg-white px-2.5 py-1 font-medium hover:border-red-300 hover:text-red-700"><Trash2 size={12} aria-hidden /> Delete</button>
+          )}
           <button onClick={() => onAsk(sel)} className="inline-flex items-center gap-1 rounded-full bg-18-orange text-white px-2.5 py-1 font-medium hover:bg-[#E5601F]"><Sparkles size={12} aria-hidden /> Ask AI to change this</button>
           <button onClick={() => setSel(null)} className="p-1 text-st-mute hover:text-st-ink" aria-label="Clear selection"><X size={14} /></button>
         </footer>
@@ -1511,7 +2565,7 @@ function Timeline({ data, file, video, player, programName, onNeedProgram, muted
 type AuthStatus = { loggedIn: boolean; method: string | null; email: string | null; error?: string };
 type LoginView = { state: 'idle' | 'waiting' | 'done' | 'failed'; url: string | null; message: string };
 
-function Account({ bridge }: { bridge: Bridge }) {
+function Account({ bridge, quiet }: { bridge: Bridge; quiet?: boolean }) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [login, setLogin] = useState<LoginView>({ state: 'idle', url: null, message: '' });
   const [code, setCode] = useState('');
@@ -1553,6 +2607,7 @@ function Account({ bridge }: { bridge: Bridge }) {
     setBusy(false);
   }
 
+  if (quiet && (!status || status.loggedIn)) return null;
   if (!status) return <p className="text-xs text-st-mute flex items-center gap-2"><Spinner /> Checking the editor&apos;s Claude sign-in…</p>;
 
   if (status.loggedIn)
@@ -1600,6 +2655,23 @@ function Chat({ events, running, busyElsewhere, error, onSay, bridge, id, draft,
   const [text, setText] = useState('');
   const [ask, dialog] = useConfirm();
   const box = useRef<HTMLTextAreaElement>(null);
+  // Files attached to the next message: saved in the project's work/attachments, named in the message.
+  const [files, setFiles] = useState<{ name: string; path: string; state: 'saving' | 'saved' | 'failed'; error?: string }[]>([]);
+  async function attach(list: FileList | null) {
+    for (const f of Array.from(list ?? [])) {
+      const name = f.name.replace(/[^\w.\- ()]+/g, '_');
+      const path = `work/attachments/${name}`;
+      setFiles((all) => [...all.filter((x) => x.path !== path), { name, path, state: 'saving' }]);
+      try {
+        const r = await fetch(`${BRIDGE}/api/p/upload?id=${encodeURIComponent(id)}&dir=attach&name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'X-Editor-Token': bridge.token }, body: f });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `error ${r.status}`);
+        setFiles((all) => all.map((x) => (x.path === path ? { ...x, state: 'saved' } : x)));
+      } catch (e) {
+        setFiles((all) => all.map((x) => (x.path === path ? { ...x, state: 'failed', error: (e as Error).message } : x)));
+      }
+    }
+  }
+  const prefill = (t: string) => { setText(t); setTimeout(() => { const b = box.current; if (b) { b.focus(); b.setSelectionRange(t.length, t.length); } }, 0); };
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => { const el = list.current; if (el) el.scrollTop = el.scrollHeight; }, [events.length, running]);
   useEffect(() => { if (draft) { setText(draft); onDraftUsed(); setTimeout(() => box.current?.focus(), 0); } }, [draft, onDraftUsed]);
@@ -1620,7 +2692,16 @@ function Chat({ events, running, busyElsewhere, error, onSay, bridge, id, draft,
     return out;
   }, [events]);
 
-  const submit = () => { const t = text.trim(); if (!t || running) return; onSay(t); setText(''); };
+  const ready = files.filter((f) => f.state === 'saved');
+  const saving = files.some((f) => f.state === 'saving');
+  const submit = () => {
+    const t = text.trim();
+    if ((!t && !ready.length) || running || saving) return;
+    const note = ready.length ? `\n\nAttached files (in this project): ${ready.map((f) => f.path).join(', ')}` : '';
+    onSay((t || 'Have a look at the attached files.') + note);
+    setText('');
+    setFiles([]);
+  };
 
   async function newChat() {
     if (!(await ask('Start a new conversation with the editor? It forgets this chat, but every file in the project stays.', 'New conversation', false))) return;
@@ -1661,13 +2742,36 @@ function Chat({ events, running, busyElsewhere, error, onSay, bridge, id, draft,
       <footer className="border-t border-st-line p-3 space-y-2 shrink-0">
         {busyElsewhere && !running && <p className="text-xs text-amber-700">The editor is busy with “{busyElsewhere}”. One edit runs at a time.</p>}
         <ErrorNote text={error} />
+        {/* Skills are shared by every video: these start a message that changes the skill itself. */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-st-mute">Skills:</span>
+          <button onClick={() => prefill('Update the long-form-whiteboard-animation skill itself (not only this project), so every future video follows this: ')} disabled={running}
+            className="rounded-full border border-st-line px-2.5 py-1 hover:border-18-orange/50 hover:text-18-orange disabled:opacity-40" title="Add a learning or a change to the editing skill, for all future videos">Update the skill</button>
+          <button onClick={() => prefill('Create a new skill called "" that does this, and use it when: ')} disabled={running}
+            className="rounded-full border border-st-line px-2.5 py-1 hover:border-18-orange/50 hover:text-18-orange disabled:opacity-40" title="Make a new skill from your description or an attached file (SKILL.md, notes, a .zip)">New skill</button>
+        </div>
+        {files.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5" aria-label="Attached files">
+            {files.map((f) => (
+              <li key={f.path} className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${f.state === 'failed' ? 'border-red-200 text-red-700' : 'border-st-line'}`} title={f.error ?? f.path}>
+                {f.state === 'saving' ? <Spinner /> : <Paperclip size={12} aria-hidden />}
+                <span className="max-w-[180px] truncate">{f.name}</span>{f.state === 'failed' && ' (not saved)'}
+                <button onClick={() => setFiles((all) => all.filter((x) => x.path !== f.path))} className="text-st-mute hover:text-st-ink" aria-label={`Remove ${f.name}`}><X size={12} /></button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="flex gap-2 items-end">
+          <label className={`p-2 rounded-lg text-st-mute hover:text-st-ink hover:bg-st-surface shrink-0 cursor-pointer ${running ? 'opacity-40 pointer-events-none' : ''}`} title="Attach files: notes, a SKILL.md, a .docx or .zip, images…">
+            <Paperclip size={17} aria-hidden /><span className="sr-only">Attach files</span>
+            <input type="file" multiple className="sr-only" disabled={running} onChange={(e) => { void attach(e.target.files); e.target.value = ''; }} />
+          </label>
           <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} rows={3} placeholder={running ? 'The editor is working…' : 'Answer, approve, or ask for changes (e.g. “at 0:24 move the card to the left”)'}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
             className={`${field} resize-none max-h-40`} aria-label="Message to the editor" />
           {running
             ? <button onClick={onStop} className={`${btnGhost} shrink-0`} aria-label="Stop"><Square size={15} aria-hidden /> Stop</button>
-            : <button onClick={submit} disabled={!text.trim()} className={`${btn} shrink-0`} aria-label="Send"><Send size={15} aria-hidden /></button>}
+            : <button onClick={submit} disabled={(!text.trim() && !ready.length) || saving} className={`${btn} shrink-0`} aria-label="Send"><Send size={15} aria-hidden /></button>}
         </div>
       </footer>
     </aside>

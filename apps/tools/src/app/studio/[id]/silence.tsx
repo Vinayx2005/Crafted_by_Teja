@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Crop, Download, Eye, EyeOff, Film, FolderOpen, Play, Save, Scissors, ScanSearch, SlidersHorizontal, Undo2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, Check, Crop, Download, Maximize2, Pause, Volume2, VolumeX, Eye, EyeOff, Film, FolderOpen, Play, Save, Scissors, ScanSearch, SlidersHorizontal, Undo2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { putProject, saveVideo, type Rec } from '@/lib/studio/silence-projects';
 import { flattenMp4 } from '@/lib/studio/mp4-flatten';
 import { streamLevels } from '@/lib/studio/audio-levels';
@@ -62,7 +62,15 @@ const NO_EDITS: Edits = { splits: [], overrides: [] };
 // `onFile` (optional): when opened from the Video Editor, every file this makes (the exported
 // video, the cut list, the project file) is also handed over, so it can be saved into the edit.
 export type SilenceFileKind = 'video' | 'cut-list' | 'project';
-export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, onFile }: { actions: HTMLElement | null; rec: Rec; blob: Blob | null; onBack: () => void; backLabel?: string; onChangePart: () => void; onFile?: (name: string, blob: Blob, kind: SilenceFileKind) => void }) {
+// `onApply` (optional, Video Editor timeline): puts the parts to keep back on the editor's timeline.
+// Without `onChangePart` the part is fixed (it comes from the timeline) and "Change part" is hidden.
+// `sound16k` (optional, Video Editor): the part's sound ready for Whisper, read by ffmpeg on this PC.
+// `transcribeNative` (optional, Video Editor): the part's words from Whisper on this PC's graphics card
+// (much faster); if it is not available or fails, Whisper in the browser is used as before.
+// `onPersist` (optional, Video Editor): every auto-save is also handed over, to be kept in the project folder.
+// `onlyUnwanted` (Video Editor's Find unwanted parts): silences are never marked (no Settings), and the
+// unwanted parts are looked for as soon as the sound has been read. Only what you remove is cut.
+export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, onFile, onApply, sound16k, transcribeNative, onPersist, onlyUnwanted }: { actions: HTMLElement | null; rec: Rec; blob: Blob | null; onBack: () => void; backLabel?: string; onlyUnwanted?: boolean; onChangePart?: () => void; onFile?: (name: string, blob: Blob, kind: SilenceFileKind) => void; onApply?: (keeps: Span[]) => Promise<string>; sound16k?: () => Promise<Float32Array>; transcribeNative?: (onStage: (stage: string, pct: number) => void) => Promise<Word[]>; onPersist?: (rec: Rec) => void }) {
   // Everything here is measured from the start of the chosen part ("part time"); `off` turns it into video time.
   const off = rec.range?.start ?? 0;
   const partLen = rec.range ? rec.range.end - rec.range.start : 0;
@@ -101,7 +109,14 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   dlgOpen.current = dlg !== 'closed';
   const pending = useRef<Project | null>(null); // a project waiting for its video
   const [viewW, setViewW] = useState(800);
-  const video = useRef<HTMLVideoElement>(null);
+  // Two players of the same video take turns, so jumping over a removed part never waits for a seek:
+  // while one plays, the other already waits (paused) at the start of the next kept part, and at the
+  // cut they swap. `video` always points at the one showing; the other is the "spare".
+  const video = useRef<HTMLVideoElement | null>(null);
+  const vidA = useRef<HTMLVideoElement | null>(null);
+  const vidB = useRef<HTMLVideoElement | null>(null);
+  const [front, setFront] = useState<0 | 1>(0); // which one is showing
+  const [rate, setRate] = useState(1); // playback speed
   const canvas = useRef<HTMLCanvasElement>(null);
   const head = useRef<HTMLDivElement>(null);
   const clockText = useRef<HTMLSpanElement>(null);
@@ -322,16 +337,19 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   }
 
   const total = vol ? vol.length * 0.02 : partLen || duration;
-  const silences = useMemo(() => (vol ? findSilences(vol, threshold, minSilence, buffer) : []), [vol, threshold, minSilence, buffer]);
+  const silences = useMemo(() => (vol && !onlyUnwanted ? findSilences(vol, threshold, minSilence, buffer) : []), [vol, threshold, minSilence, buffer, onlyUnwanted]);
   const segs = useMemo(() => (vol ? segments(silences, edits.splits, edits.overrides, total) : []), [vol, silences, edits, total]);
   const cuts = useMemo(() => cutSpans(segs), [segs]);
   const removed = cuts.reduce((n, c) => n + c.end - c.start, 0);
+  const keeps = useMemo(() => keepSpans(cuts, total), [cuts, total]);
   const current = selected == null ? null : segs.find((s) => selected >= s.start && selected < s.end) ?? null;
 
   // Saves the project: a second after every change, and again when leaving the editor.
   const persist = () => {
     if (!file || !vol) return;
-    putProject({ id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), words: words ?? undefined, flags, hasVideo: meta.current.hasVideo, updatedAt: Date.now(), link: rec.link }).then(() => setAutosaved(true), () => {});
+    const saved: Rec = { id: rec.id, name: rec.name, fileName: file.name, size: file.size, range: rec.range ?? null, total: vol.length * 0.02, removed, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides, vol: Uint8Array.from(vol, (x) => Math.round(x)), words: words ?? undefined, flags, hasVideo: meta.current.hasVideo, updatedAt: Date.now(), link: rec.link };
+    putProject(saved).then(() => setAutosaved(true), () => {});
+    onPersist?.(saved);
   };
   const persistRef = useRef(persist);
   persistRef.current = persist;
@@ -363,7 +381,9 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     if (!file || !vol || finding) return;
     setFindNote('');
     try {
-      const ws = words ?? (await transcribe(file, rec.range, (stage, pct) => setFinding({ stage, pct: Math.round(pct) })));
+      const onStage = (stage: string, pct: number) => setFinding({ stage, pct: Math.round(pct) });
+      const native = words ? null : transcribeNative ? await transcribeNative(onStage).catch(() => null) : null;
+      const ws = words ?? native ?? (await transcribe(file, rec.range, onStage, sound16k));
       setWords(ws);
       setFinding({ stage: 'Checking for repeats and fumbles', pct: 100 });
       let ai: Flag[] = [];
@@ -384,6 +404,13 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     }
     setFinding(null);
   }
+  // Find unwanted parts mode: look as soon as the sound is read, once, unless it was done before.
+  const autoFound = useRef(false);
+  useEffect(() => {
+    if (!onlyUnwanted || autoFound.current || !vol || !file || busy || finding || flags.length) return;
+    autoFound.current = true;
+    void findUnwanted();
+  }, [onlyUnwanted, vol, file, busy]); // eslint-disable-line react-hooks/exhaustive-deps
   // A highlight counts as removed once (nearly) all of it is cut, not when its middle happens to sit in a silence.
   const isCut = (f: Flag) => cuts.reduce((n, c) => n + Math.max(0, Math.min(f.end, c.end) - Math.max(f.start, c.start)), 0) >= 0.9 * (f.end - f.start);
   const setFlagsHidden = (list: Flag[], hide: boolean) => list.length && change({
@@ -462,16 +489,114 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
         const t = v.currentTime - off;
         if (head.current) head.current.style.left = `${t * perSec}px`;
         if (clockText.current) clockText.current.textContent = `${clock(editedTime(t, cuts))} / ${clock(total - removed)}`;
+        // Our controls: the edited length once checked (that is what ends up on the timeline), else the part.
+        const showEdited = edited && !!vol;
+        const now = showEdited ? editedTime(t, cuts) : t;
+        const len = showEdited ? total - removed : total;
+        if (ctlTime.current) ctlTime.current.textContent = `${clock(Math.max(0, Math.min(len, now)))} / ${clock(len)}`;
+        if (ctlBar.current && document.activeElement !== ctlBar.current) { ctlBar.current.max = String(len); ctlBar.current.value = String(Math.max(0, Math.min(len, now))); }
         const el = scroller.current;
         if (el && !v.paused && (t * perSec < el.scrollLeft || t * perSec > el.scrollLeft + el.clientWidth)) el.scrollLeft = t * perSec - 40;
         if (stopAt.current != null && !v.paused && v.currentTime >= stopAt.current) { v.pause(); stopAt.current = null; }
-        if (edited && !v.paused) hop(v, cuts, off);
+        if (edited && !v.paused && !dlgOpen.current) {
+          // Gapless: the spare waits at the next kept part; at the end of this one, swap to it.
+          const spare = v === vidA.current ? vidB.current : vidA.current;
+          const k = keeps.findIndex((x) => t >= x.start - 0.05 && t < x.end);
+          const next = k >= 0 ? keeps[k + 1] : undefined;
+          if (spare && next) {
+            if (spare.dataset.target !== String(next.start)) {
+              if (!spare.paused) spare.pause();
+              spare.currentTime = next.start + off;
+              spare.dataset.target = String(next.start);
+            }
+            const ready = spare.readyState >= 2 && !spare.seeking;
+            if (t >= keeps[k].end - 0.035 && ready) {
+              spare.muted = v.muted;
+              spare.volume = v.volume;
+              spare.playbackRate = v.playbackRate;
+              void spare.play().catch(() => {});
+              v.pause();
+              delete spare.dataset.target;
+              video.current = spare;
+              setFront(spare === vidA.current ? 0 : 1);
+              raf = requestAnimationFrame(tick);
+              return;
+            }
+          }
+          hop(v, cuts, off); // inside a removed part (or the spare was not ready): jump the old way
+        }
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [cuts, edited, total, removed, perSec]);
+  }, [cuts, edited, total, removed, perSec, keeps]);
+
+  // ---- the player's own controls (the browser's would show the whole file's length) ----
+  const ctlTime = useRef<HTMLSpanElement>(null);
+  const ctlBar = useRef<HTMLInputElement>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  // From the scrub bar: edited time (once checked) back to part time.
+  function scrubTo(x: number) {
+    const v = video.current;
+    if (!v) return;
+    let t = x;
+    if (edited && vol) {
+      let acc = 0;
+      t = total;
+      for (const k of keepSpans(cuts, total)) {
+        const len = k.end - k.start;
+        if (x <= acc + len) { t = k.start + (x - acc); break; }
+        acc += len;
+      }
+    }
+    t = Math.max(0, Math.min(total, t));
+    setSelected(t);
+    v.currentTime = t + off;
+  }
+  useEffect(() => { for (const el of [vidA.current, vidB.current]) if (el) el.playbackRate = rate; }, [rate, url]);
+
+  function togglePlay() {
+    const v = video.current;
+    if (!v) return;
+    if (!v.paused) return v.pause();
+    if (v.currentTime >= off + total - 0.05) v.currentTime = off; // at the end: start over
+    void v.play().catch(() => {});
+  }
+
+  // Repaint the time readouts as soon as the cuts change (Remove all, settings, keep/remove), not only
+  // on the next animation frame: those pause in background tabs, which left a stale length showing.
+  useEffect(() => {
+    const v = video.current;
+    if (!v || !total) return;
+    const t = v.currentTime - off;
+    const showEdited = edited && !!vol;
+    const now = showEdited ? editedTime(t, cuts) : t;
+    const len = showEdited ? total - removed : total;
+    if (clockText.current) clockText.current.textContent = `${clock(editedTime(t, cuts))} / ${clock(total - removed)}`;
+    if (ctlTime.current) ctlTime.current.textContent = `${clock(Math.max(0, Math.min(len, now)))} / ${clock(len)}`;
+    if (ctlBar.current) { ctlBar.current.max = String(len); ctlBar.current.value = String(Math.max(0, Math.min(len, now))); }
+  }, [cuts, removed, total, edited, vol, off, duration]); // duration: once the video has loaded
+
+  // Dragging an end of a removed part: the new end is shown while you drag and saved (one undo step)
+  // when you let go. Making it longer removes more; shorter gives that bit back.
+  const lane = useRef<HTMLDivElement>(null);
+  const [drag, setDrag] = useState<{ cut: Span; edge: 'start' | 'end'; t: number } | null>(null);
+  const dragAt = (clientX: number, cut: Span, edge: 'start' | 'end') => {
+    const left = lane.current?.getBoundingClientRect().left ?? 0;
+    const t = (clientX - left) / perSec;
+    const MIN = 0.05; // a removed part never shrinks below 50 ms by dragging
+    return edge === 'start' ? Math.max(0, Math.min(cut.end - MIN, t)) : Math.max(cut.start + MIN, Math.min(total, t));
+  };
+  function resizeCut(cut: Span, edge: 'start' | 'end', t: number) {
+    const was = cut[edge];
+    if (Math.abs(t - was) < 0.005) return;
+    const grow = edge === 'end' ? t > was : t < was;
+    const o = { start: Math.min(t, was), end: Math.max(t, was), hide: grow };
+    change({ splits: [...edits.splits, t], overrides: [...edits.overrides, o] });
+  }
 
   function seek(e: React.MouseEvent<HTMLDivElement>) {
     const t = Math.max(0, Math.min(total, (e.clientX - e.currentTarget.getBoundingClientRect().left) / perSec));
@@ -548,6 +673,19 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
+  // Timeline mode: the parts to keep, in video seconds, go back onto the editor's timeline.
+  const [applying, setApplying] = useState(false);
+  async function applyToTimeline() {
+    if (!onApply || !vol) return;
+    setApplying(true);
+    setError('');
+    try {
+      persistRef.current();
+      setNotice(await onApply(keepSpans(cuts, total).map((k) => ({ start: k.start + off, end: k.end + off }))));
+    } catch (e) { setError((e as Error).message); }
+    finally { setApplying(false); }
+  }
+
   function download() {
     const text = ['Parts to keep (start, end in seconds)', ...keepSpans(cuts, total).map((k) => `${k.start.toFixed(2)}, ${k.end.toFixed(2)}`), '', 'Parts removed', ...cuts.map((s) => `${s.start.toFixed(2)}, ${s.end.toFixed(2)}`)].join('\n');
     deliver(`${(file?.name ?? 'video').replace(/\.[^.]+$/, '')}-cut-list.txt`, new Blob([text], { type: 'text/plain' }), 'cut-list');
@@ -563,7 +701,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
       {actions && createPortal(<>
         <button onClick={() => { persistRef.current(); onBack(); }} className={`${btnGhost} !min-h-[38px] !px-3`}><ArrowLeft size={14} aria-hidden /> {backLabel ?? 'Projects'}</button>
         {file ? (
-          <button onClick={() => { persistRef.current(); onChangePart(); }} disabled={busy} className={`${btnGhost} !min-h-[38px] !px-3`}><Crop size={14} aria-hidden /> Change part</button>
+          onChangePart && <button onClick={() => { persistRef.current(); onChangePart(); }} disabled={busy} className={`${btnGhost} !min-h-[38px] !px-3`}><Crop size={14} aria-hidden /> Change part</button>
         ) : (
           <label className={`${btnGhost} !min-h-[38px] !px-3 cursor-pointer`}>
             <Upload size={14} aria-hidden /> Choose video
@@ -578,7 +716,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
           <input type="file" accept=".json,application/json" className="sr-only" onChange={(e) => { openProject(e.target.files?.[0]); e.target.value = ''; }} />
         </label>
         {/* The three silence settings, in a pop-up: it stays open while you drag, so the timeline updates as you watch. */}
-        <Popover
+        {!onlyUnwanted && <Popover
           align="right"
           trigger={({ open: isOpen, toggle }) => (
             <button onClick={toggle} aria-haspopup="dialog" aria-expanded={isOpen} className={`${btnGhost} !min-h-[38px] !px-3`}><SlidersHorizontal size={14} aria-hidden /> Settings</button>
@@ -596,8 +734,14 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
               <p className="text-xs text-st-mute">Threshold: anything quieter than this counts as silence. Minimum Silence: a pause must last this long. Buffer: a little sound kept on both sides so words are not clipped.</p>
             </div>
           )}
-        </Popover>
+        </Popover>}
         <button onClick={saveProject} disabled={!file} className={`${btnGhost} !min-h-[38px] !px-3`}><Save size={14} aria-hidden /> Save project</button>
+        {onApply && (
+          <button onClick={applyToTimeline} disabled={!vol || applying} title="Remove these parts from the editor's timeline (you can undo it there)"
+            className={`${btn} !py-2 !min-h-[38px] !px-3`}>
+            {applying ? <Spinner /> : <Check size={14} aria-hidden />} {applying ? 'Applying…' : 'Apply to timeline'}
+          </button>
+        )}
         <button onClick={openExport} disabled={!vol || exp !== null} className={`${btn} !py-2 !min-h-[38px] !px-3 !bg-st-ink hover:!bg-black`}>
           {exp === null ? <Film size={14} aria-hidden /> : <Spinner />} {exp === null ? 'Export' : `Exporting ${exp.pct}%`}
         </button>
@@ -608,7 +752,38 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
       <div className="grid gap-4 lg:grid-cols-[minmax(340px,1fr)_auto]">
         <section className={`${card} p-4 lg:max-w-[60vw]`} aria-label="Video">
           {url ? (
-            <video ref={video} src={url} controls onLoadedMetadata={(e) => { setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0); if (off) e.currentTarget.currentTime = off; }} className="mx-auto block max-h-[55vh] w-auto max-w-full rounded-lg bg-black" />
+            <div ref={frame} className="relative mx-auto w-fit max-w-full overflow-hidden rounded-lg bg-black">
+              {/* Player A sets the frame's size; player B sits exactly on top. Only the front one is visible. */}
+              {([0, 1] as const).map((i) => (
+                <video key={i} src={url} onClick={togglePlay} preload="auto"
+                  ref={(el) => { (i === 0 ? vidA : vidB).current = el; if (i === front || !video.current) video.current = el ?? video.current; }}
+                  onPlay={(e) => { if (e.currentTarget === video.current) setPlaying(true); }}
+                  onPause={(e) => { if (e.currentTarget === video.current) setPlaying(false); }}
+                  onVolumeChange={(e) => { if (e.currentTarget === video.current) setMuted(e.currentTarget.muted); }}
+                  onLoadedMetadata={(e) => {
+                    const el = e.currentTarget;
+                    el.playbackRate = rate;
+                    if (i === 0) setDuration(Number.isFinite(el.duration) ? el.duration : 0);
+                    if (off && el === video.current) el.currentTime = off;
+                  }}
+                  className={`${i === 0 ? 'block max-h-[55vh] w-auto max-w-full' : 'absolute inset-0 h-full w-full object-contain'} bg-black cursor-pointer ${i === front ? '' : 'opacity-0 pointer-events-none'}`} />
+              ))}
+              {/* Own controls: time and scrub bar cover only this part (or the edited length), never the whole file. */}
+              <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs">
+                <button onClick={togglePlay} className="p-1 rounded hover:bg-white/15" aria-label={playing ? 'Pause' : 'Play'}>
+                  {playing ? <Pause size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
+                </button>
+                <span ref={ctlTime} className="tabular-nums shrink-0">0:00 / 0:00</span>
+                <input ref={ctlBar} type="range" min={0} max={0} step={0.01} defaultValue={0} aria-label="Position"
+                  onInput={(e) => scrubTo(Number(e.currentTarget.value))} onMouseUp={(e) => e.currentTarget.blur()}
+                  className="flex-1 min-w-[6rem] accent-[#F37335] cursor-pointer" />
+                <button onClick={() => { if (video.current) video.current.muted = !video.current.muted; }} className="p-1 rounded hover:bg-white/15" aria-label={muted ? 'Unmute' : 'Mute'}>
+                  {muted ? <VolumeX size={14} aria-hidden /> : <Volume2 size={14} aria-hidden />}
+                </button>
+                <button onClick={() => { const f = frame.current; if (!f) return; if (document.fullscreenElement) void document.exitFullscreen(); else void f.requestFullscreen().catch(() => {}); }}
+                  className="p-1 rounded hover:bg-white/15" aria-label="Full screen"><Maximize2 size={14} aria-hidden /></button>
+              </div>
+            </div>
           ) : (
             <div className="aspect-video grid place-items-center rounded-lg bg-st-surface text-sm text-st-mute">Choose a video to begin</div>
           )}
@@ -637,8 +812,23 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
               </div>
             )}
             {findNote && <p className="mt-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{findNote}</p>}
-            {open.some((f) => f.kind === 'filler') && (
-              <button onClick={() => removeFlags(open.filter((f) => f.kind === 'filler'))} className={`${btnGhost} mt-3 !min-h-[38px] !px-3 self-start`}><EyeOff size={14} aria-hidden /> Remove all fillers</button>
+            {/* Everything at once: every highlighted part (fillers, repeats, fumbles), or only the fillers; and back. */}
+            {(open.length > 0 || shown.length > open.length) && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {open.length > 0 && (
+                  <button onClick={() => removeFlags(open)} className={`${btn} !min-h-[38px] !px-3 !py-2`} title="Remove every highlighted part from the video (you can restore them)">
+                    <EyeOff size={14} aria-hidden /> Remove all ({open.length})
+                  </button>
+                )}
+                {open.some((f) => f.kind === 'filler') && open.some((f) => f.kind !== 'filler') && (
+                  <button onClick={() => removeFlags(open.filter((f) => f.kind === 'filler'))} className={`${btnGhost} !min-h-[38px] !px-3`}><EyeOff size={14} aria-hidden /> Only fillers</button>
+                )}
+                {shown.length > open.length && (
+                  <button onClick={() => setFlagsHidden(shown.filter(isCut), false)} className={`${btnGhost} !min-h-[38px] !px-3`} title="Put every removed highlighted part back">
+                    <Undo2 size={14} aria-hidden /> Restore all ({shown.length - open.length})
+                  </button>
+                )}
+              </div>
             )}
             <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
               {shown.length > 0 ? (
@@ -677,6 +867,13 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
           <button onClick={cutHere} disabled={!vol} className={tool(!vol)} title="Cut the video into two parts at the playhead"><Scissors size={14} aria-hidden /> Cut</button>
           <button onClick={() => choose(true)} disabled={!current || current.hidden} className={tool(!current)} title="Remove the selected part from the preview (closed eye)"><EyeOff size={14} aria-hidden /> Remove</button>
           <button onClick={() => choose(false)} disabled={!current || !current.hidden} className={tool(!current)} title="Keep the selected part in the preview (open eye)"><Eye size={14} aria-hidden /> Keep</button>
+          {/* Playback speed (the sound keeps its pitch). Only for watching: the export is always at normal speed. */}
+          <div className="flex items-center rounded-lg border border-st-line bg-white p-0.5" role="group" aria-label="Playback speed">
+            {[1, 1.5, 2, 2.5, 3].map((r) => (
+              <button key={r} onClick={() => setRate(r)} aria-pressed={rate === r} title={`Play at ${r}x`}
+                className={`rounded-md px-2 py-1.5 text-xs tabular-nums ${rate === r ? 'bg-18-orange text-white font-semibold' : 'text-st-mute hover:text-st-ink hover:bg-st-surface'}`}>{r}x</button>
+            ))}
+          </div>
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => zoomBy(1 / 1.5)} disabled={!vol || zoom <= 1} className={tool(!vol)} aria-label="Zoom out" title="Zoom out"><ZoomOut size={14} aria-hidden /></button>
             <input type="range" min={1} max={maxZoom} step={0.5} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} onPointerUp={(e) => e.currentTarget.blur()} disabled={!vol} aria-label="Zoom" className="w-28 accent-[#F37335]" />
@@ -688,12 +885,12 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
           {vol ? (
             <><b>{cuts.length}</b> {cuts.length === 1 ? "part" : "parts"} removed · <b>{clock(removed)}</b> gone · {clock(total)} becomes <b>{clock(Math.max(0, total - removed))}</b>{current && <span className="text-st-mute"> · selected part: {clock(current.start)} to {clock(current.end)}, {current.hidden ? 'removed' : 'kept'}</span>}{autosaved && <span className="text-st-mute"> · auto-saved</span>}</>
           ) : (
-            <span className="text-st-mute">Press Start to find the silent parts.</span>
+            <span className="text-st-mute">{onlyUnwanted ? (busy ? 'Reading the sound…' : 'Press Start to read the sound.') : 'Press Start to find the silent parts.'}</span>
           )}
         </p>
         <div ref={scroller} className="overflow-x-auto rounded-lg bg-st-surface">
           {vol ? (
-            <div className="relative h-36 cursor-pointer select-none" style={{ width: innerW }} onClick={seek}>
+            <div ref={lane} className={`relative h-36 select-none ${drag ? 'cursor-ew-resize' : 'cursor-pointer'}`} style={{ width: innerW }} onClick={seek}>
               <div className="absolute inset-x-0 top-0 h-5 border-b border-st-line text-[10px] text-st-mute pointer-events-none">
                 {ticks.map((t) => <span key={t} className="absolute top-1 pl-1 border-l border-st-line" style={{ left: t * perSec }}>{clock(t)}</span>)}
               </div>
@@ -729,13 +926,53 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
                   {(f.end - f.start) * perSec > 44 && <span className="block truncate px-1 pt-1">{KIND_LABEL[f.kind]}</span>}
                 </button>
               ))}
+              {drag && (() => {
+                const was = drag.cut[drag.edge];
+                const a = Math.min(was, drag.t), b = Math.max(was, drag.t);
+                const grow = drag.edge === 'end' ? drag.t > was : drag.t < was;
+                return (
+                  <>
+                    {/* What the drag changes: darker when more is removed, light when a bit is given back. */}
+                    <div className={`absolute top-5 bottom-0 pointer-events-none ${grow ? 'bg-st-ink/60' : 'bg-white/70'} outline-dashed outline-1 outline-18-orange`} style={{ left: a * perSec, width: (b - a) * perSec }} />
+                    <div className="absolute top-5 bottom-0 w-0.5 bg-18-orange pointer-events-none" style={{ left: drag.t * perSec - 1 }} />
+                    <span className="absolute top-0.5 z-10 -translate-x-1/2 whitespace-nowrap rounded bg-st-ink px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white pointer-events-none" style={{ left: drag.t * perSec }}>
+                      {clock(drag.t)} · {grow ? '+' : '−'}{(b - a).toFixed(2)} s
+                    </span>
+                  </>
+                );
+              })()}
+              {cuts.flatMap((c) => (['start', 'end'] as const).map((edge) => (
+                <div
+                  key={`${edge}-${c.start}-${c.end}`}
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label={`${edge === 'start' ? 'Start' : 'End'} of the removed part ${clock(c.start)} to ${clock(c.end)}. Drag to change it.`}
+                  title="Drag to make the removed part longer or shorter"
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.stopPropagation();
+                    e.preventDefault();
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    setDrag({ cut: c, edge, t: c[edge] });
+                  }}
+                  onPointerMove={(e) => { if (drag && drag.cut === c && drag.edge === edge) setDrag({ ...drag, t: dragAt(e.clientX, c, edge) }); }}
+                  onPointerUp={() => { if (drag && drag.cut === c && drag.edge === edge) { resizeCut(c, edge, drag.t); setDrag(null); } }}
+                  onPointerCancel={() => setDrag(null)}
+                  className="group absolute top-5 bottom-0 z-[5] w-3 -translate-x-1/2 cursor-ew-resize touch-none"
+                  style={{ left: c[edge] * perSec }}
+                >
+                  <span className={`absolute inset-y-0 left-1/2 -translate-x-1/2 w-[3px] rounded-full transition-colors ${drag?.cut === c && drag.edge === edge ? 'bg-18-orange opacity-0' : 'bg-white/80 group-hover:bg-18-orange'}`} />
+                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-5 w-2 rounded-sm border border-st-line bg-white shadow-sm opacity-0 group-hover:opacity-100" />
+                </div>
+              )))}
               <div ref={head} className="absolute top-0 bottom-0 w-0.5 bg-sky-600 pointer-events-none" style={{ left: 0 }} />
             </div>
           ) : (
             <div className="grid h-36 place-items-center text-sm text-st-mute">The waveform appears here</div>
           )}
         </div>
-        <p className="text-xs text-st-mute mt-2">Dark parts are removed from the preview. Click the waveform to select a part and jump there, then press Remove or Keep. Cut splits a part at the blue line. Red boxes are unwanted parts found for you: click one to hear it. Shortcuts: Space plays or pauses, the left and right arrows jump to the previous or next kept clip, and Alt + scroll zooms the timeline. Your video stays on your computer.</p>
+        <p className="text-xs text-st-mute mt-2">Dark parts are removed from the preview. Click the waveform to select a part and jump there, then press Remove or Keep. Cut splits a part at the blue line. Drag either end of a dark part to make it longer or shorter. Red boxes are unwanted parts found for you: click one to hear it. Shortcuts: Space plays or pauses, the left and right arrows jump to the previous or next kept clip, and Alt + scroll zooms the timeline. Your video stays on your computer.</p>
       </section>
 
       {dlg !== 'closed' && (

@@ -7,7 +7,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { BookOpen, Check, ChevronDown, ChevronsLeft, ChevronsRight, Clapperboard, FolderOpen, Home, LogOut, Menu, Palette, Scissors, Search, Sparkles, X } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronsLeft, ChevronsRight, Clapperboard, FolderOpen, Home, LogOut, Menu, Palette, Search, Sparkles, X } from 'lucide-react';
 import { api, configured, errorText, supabase } from '@/lib/studio/client';
 import { btn, btnGhost, card, ErrorNote, field, label, menuItem, Popover, Spinner } from './ui';
 
@@ -93,7 +93,6 @@ const NAV = [
   { key: 'create', label: 'Create', icon: Sparkles },
   { key: 'library', label: 'Library', icon: FolderOpen },
   { key: 'knowledge', label: 'Knowledge', icon: BookOpen },
-  { key: 'silence', label: 'Silence remover', icon: Scissors },
   { key: 'video', label: 'Video Editor', icon: Clapperboard },
   { key: 'research', label: 'Research', icon: Search },
   { key: 'settings', label: 'Brand Settings', icon: Palette },
@@ -111,9 +110,11 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
   const toggleMini = () => setMini((m) => { try { localStorage.setItem('studio-sidebar-mini', m ? '0' : '1'); } catch {} return !m; });
 
   const brandId = pathname.match(/^\/studio\/([0-9a-f-]{36})/i)?.[1] ?? '';
-  const section = brandId ? params.get('section') || 'create' : 'home';
-  // The Silence remover and the Video Editor get the whole width (timeline, chat beside the outputs).
-  const wide = section === 'silence' || section === 'video';
+  // The old Silence remover section is now part of the Video Editor (Remove pauses & fillers).
+  const asked = brandId ? params.get('section') || 'create' : 'home';
+  const section = asked === 'silence' ? 'video' : asked;
+  // The Video Editor gets the whole width (timeline, chat beside the outputs).
+  const wide = section === 'video';
 
   // Fresh on every screen change, so a new or archived brand shows up straight away.
   useEffect(() => {
@@ -145,6 +146,8 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
             <li key={key}>
               <Link
                 href={href(key)}
+                // Video Editor: clicking it again (same page) closes the open project and shows the projects.
+                onClick={key === 'video' ? () => window.dispatchEvent(new Event('studio-video-home')) : undefined}
                 aria-current={active ? 'page' : undefined}
                 title={small ? text : undefined}
                 className={`flex items-center gap-3 rounded-lg ${small ? 'justify-center px-0' : 'px-3'} py-2.5 min-h-[40px] text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange/40 ${active ? 'bg-18-orange/10 text-18-orange font-semibold' : 'text-st-ink/80 hover:bg-st-surface hover:text-st-ink'}`}

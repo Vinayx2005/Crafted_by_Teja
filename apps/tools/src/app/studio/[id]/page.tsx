@@ -15,21 +15,22 @@ import { btnGhost, card, ErrorNote, Spinner, useConfirm } from '../ui';
 import Competition from './competition';
 import { Direction, PlaybookBox, usePlaybook } from './learnings';
 import Knowledge from './knowledge';
-import Silence from './silence-home';
 import VideoEditor from './video-editor';
 import Work from './work';
 
-const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', silence: 'Silence remover', video: 'Video Editor', research: 'Research', settings: 'Brand Settings' };
+const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', video: 'Video Editor', research: 'Research', settings: 'Brand Settings' };
 
 export default function BrandScreen() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const params = useSearchParams();
-  const raw = params.get('section') ?? 'create';
+  // ?section=silence (the old Silence remover) opens the Video Editor, which has it as Remove pauses & fillers.
+  const asked = params.get('section') ?? 'create';
+  const raw = asked === 'silence' ? 'video' : asked;
   const section = raw in TITLES ? raw : 'create';
   const [page, setPage] = useState<Page | null>(null);
-  const [actions, setActions] = useState<HTMLElement | null>(null); // header spot for the Silence remover buttons
-  const [videoActions, setVideoActions] = useState<HTMLElement | null>(null); // and for the Video Editor's
+  const [videoActions, setVideoActions] = useState<HTMLElement | null>(null); // header spot for the Video Editor's buttons
+  const [videoOpen, setVideoOpen] = useState(false); // a Video Editor project is open: no page title
   const [research, setResearch] = useState<'competitors' | 'works'>('competitors');
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -80,15 +81,15 @@ export default function BrandScreen() {
   return (
     <div>
       {dialog}
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
+      {/* Inside a Video Editor project the project's own bar is the title, so this one is hidden. */}
+      <header className={`mb-6 flex flex-wrap items-end justify-between gap-3 ${section === 'video' && videoOpen ? 'hidden' : ''}`}>
         <div>
           <p className="text-xs text-st-mute">{page.name} <span aria-hidden>/</span> {TITLES[section]}</p>
           <h1 className="text-xl font-semibold tracking-tight mt-1">{TITLES[section]}</h1>
         </div>
-        <div ref={setActions} className={section === 'silence' ? 'flex flex-wrap items-center justify-end gap-2' : 'hidden'} />
         <div ref={setVideoActions} className={section === 'video' ? 'flex flex-wrap items-center justify-end gap-2' : 'hidden'} />
       </header>
-      {section !== 'create' && section !== 'library' && <div className="mb-4"><ErrorNote text={error} /></div>}
+      {section !== 'create' && section !== 'library' && error && <div className="mb-4"><ErrorNote text={error} /></div>}
 
       <div hidden={section !== 'create' && section !== 'library'}>
         <Work page={page} view={section === 'library' ? 'library' : 'create'} onOpened={() => router.replace(`/studio/${id}?section=create`)} />
@@ -96,10 +97,8 @@ export default function BrandScreen() {
 
       <div hidden={section !== 'knowledge'}><Knowledge page={page} /></div>
 
-      <div hidden={section !== 'silence'}><Silence actions={actions} /></div>
-
       {/* Mounted only when open: it talks to the editor bridge on this PC. */}
-      {section === 'video' && <VideoEditor actions={videoActions} />}
+      {section === 'video' && <VideoEditor actions={videoActions} onProjectOpen={setVideoOpen} />}
 
       <div hidden={section !== 'research'} className="space-y-5">
         <div role="tablist" aria-label="Research" className="inline-flex rounded-lg bg-st-surface p-1">
