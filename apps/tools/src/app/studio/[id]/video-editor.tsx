@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ChevronLeft, ChevronRight, ZoomIn, ZoomOut, CheckCircle2, Clapperboard, Clock, Flag, Keyboard, Magnet, MousePointer2, Trash2, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
+  ChevronLeft, ChevronRight, Gauge, ZoomIn, ZoomOut, CheckCircle2, Clapperboard, Clock, Flag, Keyboard, Magnet, MousePointer2, Trash2, Download, LayoutGrid, PenLine, Wand2, Eye, EyeOff, ExternalLink, FileText, Film, FolderPlus, Image as ImageIcon, Lock, LogIn, Maximize2,
   MessageSquare, MessageSquarePlus, Minus, Music, Play, Plug, Paperclip, Plus, RefreshCw, ScanSearch, Scissors, Send, Sparkles, Square, Unlock, Upload, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { btn, btnGhost, card, ErrorNote, field, label, Spinner, useConfirm } from '../ui';
@@ -1999,6 +1999,8 @@ function Tip({ label, keys, children, wide }: { label: string; keys?: string; ch
   );
 }
 
+const SPEEDS = [1, 1.5, 2, 2.5, 3];
+
 function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath, programFresh, programName, clock, timelineMode, live: liveCtl, onOpen, muted, onMute, onAsk, onDropMedia, notice, onUndo, onDismiss, magnetic, onMagnetic, markers, onMarkers, onEdit }: {
   data: Obj | null; file: string | null; srcPrefix: string; video: HTMLVideoElement | null; player: HTMLVideoElement | null;
   viewPath: string | null; programPath: string | null; programFresh: boolean; programName: string | null; clock: Clock; timelineMode: boolean; live: Live | null;
@@ -2008,6 +2010,20 @@ function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath,
   magnetic: boolean; onMagnetic: () => void; markers: number[]; onMarkers: (m: number[]) => void; onEdit: (e: TimelineEdit) => void;
 }) {
   const { clips, duration } = useMemo(() => (data ? buildClips(data) : { clips: [], duration: 0 }), [data]);
+  // Playback speed: each click goes 1x → 1.5x → 2x → 2.5x → 3x → 1x. It applies to both players and the
+  // live preview. defaultPlaybackRate too, so it stays when the player moves on to another file.
+  const [rate, setRate] = useState(1);
+  const nextRate = () => setRate((r) => SPEEDS[(SPEEDS.indexOf(r) + 1) % SPEEDS.length]);
+  useEffect(() => {
+    for (const v of [video, player]) if (v) { v.defaultPlaybackRate = rate; v.playbackRate = rate; }
+  }, [rate, video, player]);
+  useEffect(() => {
+    if (!liveCtl) return;
+    liveCtl.post({ type: 'rate', r: rate });
+    let was = liveCtl.get().ready;
+    // The preview page loads again after some changes: tell it the speed again.
+    return liveCtl.sub(() => { const now = liveCtl.get().ready; if (now && !was) liveCtl.post({ type: 'rate', r: rate }); was = now; });
+  }, [liveCtl, rate]);
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
   const [locked, setLocked] = useState<Record<string, boolean>>({});
   // Selected clips (by id). One clip shows its details below the timeline; several can be deleted together.
@@ -2388,6 +2404,12 @@ function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath,
             <Tip label="Add marker" keys="M">
               <button onClick={() => toggleMarker(t)} aria-label="Add marker (M)" className="inline-flex items-center rounded-md p-1.5 text-st-mute hover:text-st-ink hover:bg-st-surface">
                 <Flag size={14} aria-hidden />
+              </button>
+            </Tip>
+            <Tip label="Playback speed (click to change)">
+              <button onClick={nextRate} aria-label={`Playback speed ${rate}x. Click for ${SPEEDS[(SPEEDS.indexOf(rate) + 1) % SPEEDS.length]}x`}
+                className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium tabular-nums ${rate !== 1 ? 'bg-18-orange/10 text-18-orange' : 'text-st-mute hover:text-st-ink hover:bg-st-surface'}`}>
+                <Gauge size={14} aria-hidden /> {rate}x
               </button>
             </Tip>
           </div>
