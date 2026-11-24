@@ -111,7 +111,27 @@ What happens behind the scenes when a folder becomes a project:
 - An export takes the same one-job-at-a-time slot as the AI editor (both rebuild `D:\Editing\public`). While either runs, the other waits.
 - After an export, Remotion's temp copies are cleaned up, as `render.py` does.
 
-### Media files (top left)
+### Media files and Edit (top left)
+The box has two tabs at its top left: **Media files** and **Edit**.
+
+#### Edit tab
+Click a clip on the timeline and the box switches to **Edit**, showing what can be changed for that clip. Changes show in the player (the live preview with graphics) at once and are saved into `work/edit.json` about 0.6 s after the last one, as one step. A **Change saved.** note with **Undo** appears under the timeline after each save; Undo puts back how it was before that change. The final render uses the same values, so exports match the preview.
+- **Position & size** (graphics, footage and captions): **Move left / right** and **Move up / down** in frame pixels, **Scale** (10–300%, around the centre of the frame) and **Opacity** (0–100%). **Reset** puts all four back. They are stored as `fx: {x, y, scale, opacity}` on the element; the Remotion `Edit` composition draws every timed element through this adjustable layer.
+- **Speaker circle** (whiteboards with the round speaker picture): **Move speaker left / right** and **up / down** move the person inside the circle (+ is right / down), and **Zoom** brings them closer or further. These set the whiteboard's `pipCx`, `pipCy` and `pipScale`; the circle itself stays bottom right. To adjust the speaker in a whiteboard, click that **whiteboard's** clip on V2. The footage clip's own position doesn't reach the circle, and the footage is hidden behind full-screen whiteboards.
+- **Text:** every piece of text the clip has (a caption, a card, a title, a lower third's name and role, each word group on a whiteboard, an opener's lines…). Only text that is already there can be changed.
+- **Sound:** **Volume** for the voice/footage (0–200%, stored as `volume` on the footage cut), sound effects, and the music (plus its volume while someone speaks).
+- Clips with nothing adjustable here (for example a zoom) say so; ask the AI editor for those.
+- Selecting several clips leaves the Edit tab empty; it works on one clip at a time.
+
+#### Color tab
+Colour grading for the footage (graphics, whiteboards and cards keep their own colours). Sliders: **Exposure** (stops), **Brightness** (midtones only), **Contrast**, **Highlights**, **Whites**, **Blacks**, **Saturation** and **Vignette** (darkened corners).
+- **Which clips:** with a footage clip selected on the timeline, the grade is for **that clip only** (the Color tab stays open when you click clips). With no clip selected, changes go to **all footage clips**.
+- **Apply to all clips** (with a clip selected): every footage clip gets that clip's grade, in one step.
+- **After / Before:** shows the preview without any grade while it says **Before**; click again for the grade. It only changes what you see, nothing is saved.
+- **Reset** puts the sliders back to normal for the clip (or all clips).
+- Changes show in the preview at once, save by themselves, and can be undone from the note under the timeline. Each cut's grade is stored as `grade` on its entry in `segments` (a cut without one uses the edit's `grade`); the export uses the same.
+
+#### Media files tab
 Click any file to open it in the preview player.
 - **Footage:** the raw files in `raw/`, plus two ways to add more:
   - **Upload** from the browser, with a progress bar.
@@ -172,6 +192,8 @@ Where the draft stands is saved in `work/editor/state.json`, so it survives a pa
 - **Stop** appears while the editor is working.
 
 ### Silence remover popup (Remove pauses & fillers)
+- **Player box is always 16:9:** a vertical (9:16) edit shows in the middle with plain black at the sides. This is only how the editor shows it: the edit and the export keep the footage's own shape (vertical footage exports 9:16).
+- **A new project with no timeline yet:** the popup works on the footage file in the preview, and **Apply to timeline** makes the first timeline from it. The whole file is kept as the starting point, the parts you keep become the footage cuts, and vertical footage (phone video, read from the file's rotation) gets a 9:16 edit. Opening the popup again then works on that timeline and session. If the project already has a timeline, open the popup from the timeline instead.
 The Silence remover opens over the editor, working directly on the video in the timeline. There is no project list and no "New project" step. It used to also be a separate **Silence remover** section in the sidebar; that section was removed, since the Video Editor has it here (an old `?section=silence` link opens the Video Editor).
 
 - **Only what is on the timeline:** it checks just the footage the timeline uses, never the parts you already cut or deleted. The popup header says what it is working on.
@@ -219,6 +241,9 @@ The timeline is read from the props that drive the Remotion render: `work/edit.j
   - **The rendered edit** (an exported final or preview in `out/`): its time is the timeline time, graphics included.
   - **A footage file the cuts use** (for example `raw/raw.mp4`, before anything is rendered): the player's time is mapped through the footage cuts (V1) to the timeline. Playing runs **cut to cut** like the finished edit, jumping over the cut-out parts and switching files where the cuts do, then stops at the end. This is the **Graphics off** way of playing the timeline.
   - **The live preview with graphics** (**Graphics on**, the default whenever the timeline comes from `work/edit.json`): the player plays the edit with its whiteboards, cards, captions, B-roll, SFX and music, drawn live from `work/edit.json` by the same Remotion code the final render uses, so nothing has to be rendered first. It updates after every change (a cut, Apply to timeline, the AI editor's changes). The bridge bundles `D:\Editing\editor-bridge\live\entry.tsx` with the esbuild in `remotion\node_modules` (rebuilt by itself when `remotion\src` changes) and serves it, with the files `edit.json` names, at `/api/live/<token>/` in a frame only the Studio pages may embed. Space, ←/→, clicking the timeline and the scrub bar all drive it. Switch **Graphics on / off** in the player header (remembered on this browser; the playhead stays where it is). With Graphics off, the volume meter follows the player; with it on, the meter stays still, because the sound plays inside the preview frame. On footage with keyframes far apart, a cut can take a moment to load the first time it plays.
+  - **No refresh needed:** the preview checks every 4 seconds (and when you come back to the tab) whether its code has changed, for example after a Remotion update or new effects. If it has, it loads itself again at the same moment. If the edit has something the preview can't draw, a red message says so, and the next change to the edit loads the preview again.
+  - **Controls hide while playing:** when the timeline plays, the play / time / scrub bar fades out 1 second after the mouse last moved over the player, and the mouse pointer hides too. Move the mouse to bring them back. They stay while the mouse is on the bar, and always while paused. (Footage files opened on their own use the browser's own controls, which hide on the browser's own timing.)
+  - **Full screen (the ⤢ button in the player header):** shows the edited version full screen. It switches the player to the timeline, turns Graphics on when the edit has graphics, and fills the screen with the player and its play / time / scrub controls. Esc leaves. The player header no longer has a download button or an "open in a new tab" link.
   - **Anything else in the player** (an image, a doc, another video): clicking the timeline opens the rendered edit if it's up to date, otherwise the footage cut under the click, at the matching moment.
 - **Zoom:** **−**, **Fit** and **+** in the timeline header.
 - **Click a clip** (Select tool) to select it and jump to its start. A bar at the bottom shows its type, times and text, with **Delete** and **Ask AI to change this**. That opens the AI editor with the clip already described, for example *"About the whiteboard at 1:11.5–1:35.8 ("24-hour exercise / …"): "*; you type what to change.

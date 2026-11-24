@@ -451,6 +451,14 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
     saving(bridge.call(`/api/p/state?id=${encodeURIComponent(id)}`, { firstDraft: fd })).catch(() => {});
   }, [bridge, id, saving]);
 
+  // Edit tab: changes show at once (the timeline data, so the live preview too) and are saved
+  // 0.6 s after the last one, as one Undo step. Changes not saved yet survive a reload of the files.
+  const pendingRef = useRef<{ pick: Pick; sets: Map<string, SetOp> } | null>(null);
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [pick, setPick] = useState<Picked | null>(null);
+  // Color tab "Before": the preview shows the footage with no grade (nothing is changed or saved).
+  const [before, setBefore] = useState(false);
+
   const refresh = useCallback(async () => {
     try {
       const [detail, tl] = await Promise.all([
@@ -458,9 +466,33 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
         bridge.call<{ file: string | null; data: Record<string, unknown> | null }>(`/api/p/timeline?id=${encodeURIComponent(id)}`).catch(() => ({ file: null, data: null })),
       ]);
       setD(detail);
-      setTimeline(tl);
+      const wait = pendingRef.current;
+      setTimeline(wait && tl.data ? { ...tl, data: applySets(tl.data, wait.pick, [...wait.sets.values()]) } : tl);
     } catch (e) { setError((e as Error).message); }
   }, [bridge, id]);
+
+  const flushEdits = useCallback(async () => {
+    clearTimeout(flushTimer.current);
+    const w = pendingRef.current;
+    if (!w) return;
+    pendingRef.current = null;
+    try {
+      await saving(bridge.call(`/api/p/timeline-edit?id=${encodeURIComponent(id)}`, { op: 'set', key: w.pick.key, index: w.pick.index, sets: [...w.sets.values()] }));
+      setTlNote({ text: 'Change saved.', undo: true }); // Undo here puts back how it was before this change
+    } catch (e) { setTlNote({ text: `Not saved: ${(e as Error).message}`, error: true }); void refresh(); }
+  }, [bridge, id, saving, refresh]);
+  const flushRef = useRef(flushEdits);
+  flushRef.current = flushEdits;
+  useEffect(() => () => { void flushRef.current(); }, []);
+  const patch = useCallback((at: Pick, sets: SetOp[]) => {
+    setTimeline((t) => (t?.data ? { ...t, data: applySets(t.data, at, sets) } : t));
+    const w = pendingRef.current;
+    if (w && (w.pick.key !== at.key || w.pick.index !== at.index)) void flushRef.current();
+    const cur = pendingRef.current ?? (pendingRef.current = { pick: at, sets: new Map() });
+    sets.forEach((x) => cur.sets.set(JSON.stringify(x.path), x));
+    clearTimeout(flushTimer.current);
+    flushTimer.current = setTimeout(() => void flushRef.current(), 600);
+  }, []);
 
   // Chat history, then live updates from the bridge.
   useEffect(() => {
@@ -622,7 +654,7 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
   useEffect(() => {
     const g = gridRef.current, m = mediaRef.current;
     if (!g || !m) return;
-    const [fw, fh] = vertical ? [9, 16] : [16, 9];
+    const [fw, fh] = [16, 9]; // the box is always 16:9; a vertical (9:16) edit sits in it with black at the sides
     const calc = () => {
       if (!window.matchMedia('(min-width: 1024px)').matches) return setPlayerW(null);
       const frameH = m.clientHeight - 45; // the row height minus the player's 45 px header
@@ -703,11 +735,15 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
 
       {/* Editor grid, as sketched: media | player | meter, then AI features, then the timeline. */}
       <div ref={gridRef} className="grid gap-3 grid-cols-1 lg:grid-cols-[minmax(240px,1fr)_auto_64px] lg:grid-rows-[minmax(300px,1fr)_auto_auto] lg:h-[calc(100vh-12.25rem)] lg:min-h-[640px]">
-        <MediaPanel boxRef={mediaRef} d={d} bridge={bridge} view={view} onOpen={setView} onChanged={refresh} />
+        <MediaPanel boxRef={mediaRef} d={d} bridge={bridge} view={view} onOpen={setView} onChanged={refresh}
+          pickKey={pick ? `${pick.key}:${pick.index}` : ''}
+          editPanel={<EditPanel data={timeline?.data ?? null} pick={pick} onSet={(sets) => pick && patch(pick, sets)} />}
+          colorPanel={<ColorPanel data={timeline?.data ?? null} pick={pick} onSet={(at, sets) => { setBefore(false); patch(at, sets); }}
+            before={before} onBefore={() => setBefore((b) => !b)} canCompare={liveOn} />} />
         <Viewer width={playerW} d={d} bridge={bridge} view={view} onVideo={setVideo} program={program} vertical={vertical}
           onProgram={() => program && setView({ kind: 'video', path: program.path, name: program.name })}
           clock={clock} canPlayTimeline={!!firstCut} onPlayTimeline={playTimeline}
-          live={liveOn ? live : null} liveProps={liveOn ? timeline?.data ?? null : null} canLive={tlView && canLive} graphics={graphics} onGraphics={toggleGraphics} />
+          live={liveOn ? live : null} liveProps={liveOn ? (before && timeline?.data ? ungraded(timeline.data) : timeline?.data ?? null) : null} badge={before && liveOn ? 'Before: no colour grade' : null} canLive={tlView && canLive} liveAvailable={canLive} graphics={graphics} onGraphics={toggleGraphics} />
         <div className="hidden lg:block lg:row-span-3 lg:col-start-3 lg:row-start-1"><Meter video={video} muted={muted} onMute={() => setMuted((m) => !m)} /></div>
         <AiBar running={running} busyElsewhere={d.busyElsewhere} draft={firstDraft} chatOpen={chatOpen} unread={!chatOpen && events.length > 0 && events[events.length - 1].kind === 'assistant'}
           captionChanges={d.captionReview ? parseCaptionReview(d.captionReview.text).reduce((n, x) => n + x.rows.length, 0) : null}
@@ -720,7 +756,9 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
           notice={tlNote} onDismiss={() => setTlNote(null)}
           magnetic={magnetic} onMagnetic={toggleMagnetic}
           markers={markers} onMarkers={(m) => { setMarkers(m); saving(bridge.call(`/api/p/state?id=${encodeURIComponent(id)}`, { markers: m })).catch(() => {}); }}
+          onPick={setPick}
           onEdit={async (ed) => {
+            setPick(null);
             try {
               const r = await saving(bridge.call<{ message: string }>(`/api/p/timeline-edit?id=${encodeURIComponent(id)}`, { ...ed, magnetic }));
               setTlNote({ text: r.message, undo: true });
@@ -847,6 +885,13 @@ function SilencePopup({ mode, d, bridge, source, magnetic, onClose, onSaved, onA
       });
       onApplied(r.message);
       return r.message;
+    } : src && !src.build && src.path && (src.from === 'preview' || src.from === 'footage') && !src.path.startsWith('out/') ? async (keeps) => {
+      // No timeline yet: the parts kept become the first timeline (the whole file is its starting point).
+      const r = await bridge.call<{ message: string }>(`/api/p/timeline-create?id=${encodeURIComponent(d.id)}`, {
+        path: src.path, keeps: keeps.map((k) => [k.start, k.end]), kind: mode,
+      });
+      onApplied(r.message);
+      return r.message;
     } : undefined,
     files: [...d.raw, ...d.out].filter((f) => f.kind === 'video' || f.kind === 'audio').map((f) => ({ path: f.path, name: f.name, size: f.size })),
     // Streams the file from D:\Editing with progress (large raw files can be over a gigabyte).
@@ -943,8 +988,11 @@ function SilencePopup({ mode, d, bridge, source, magnetic, onClose, onSaved, onA
 const size = (n: number) => (n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 const when = (ms: number) => new Date(ms).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-function MediaPanel({ boxRef, d, bridge, view, onOpen, onChanged }: { boxRef: React.RefObject<HTMLElement>; d: Detail; bridge: Bridge; view: View | null; onOpen: (v: View) => void; onChanged: () => void }) {
+function MediaPanel({ boxRef, d, bridge, view, onOpen, onChanged, pickKey, editPanel, colorPanel }: { boxRef: React.RefObject<HTMLElement>; d: Detail; bridge: Bridge; view: View | null; onOpen: (v: View) => void; onChanged: () => void; pickKey: string; editPanel: React.ReactNode; colorPanel: React.ReactNode }) {
   const [tab, setTab] = useState<'footage' | 'outputs' | 'images' | 'docs'>(d.out.length ? 'outputs' : 'footage');
+  // Two tabs: the project's files, and Edit (the clip selected on the timeline). Selecting a clip opens Edit.
+  const [mode, setMode] = useState<'media' | 'edit' | 'color'>('media');
+  useEffect(() => { if (pickKey) setMode((m) => (m === 'color' ? 'color' : 'edit')); }, [pickKey]);
   const docs: (TextFile & { text?: string | null })[] = [
     ...(d.plan ? [{ name: 'Graphics plan', path: 'work/plan.md', modified: 0, text: d.plan }] : []),
     ...(d.brief ? [{ name: 'Brief (intake answers)', path: 'work/brief.md', modified: 0, text: d.brief }] : []),
@@ -960,14 +1008,19 @@ function MediaPanel({ boxRef, d, bridge, view, onOpen, onChanged }: { boxRef: Re
   return (
     <section ref={boxRef} className={`${card} flex flex-col min-h-[280px] lg:min-h-0 overflow-hidden`} aria-label="Media files">
       <header className="flex items-center gap-1 px-2 h-11 border-b border-st-line shrink-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-st-mute px-1.5 mr-1 shrink-0">Media files</h2>
-        {([['footage', `Footage ${d.raw.length}`], ['outputs', `Outputs ${d.out.length}`], ['images', `Images ${d.workImages.length}`], ['docs', `Docs ${docs.length}`]] as const).map(([k, text]) => (
+        <div className="flex items-center rounded-lg bg-st-surface p-0.5 mr-1 shrink-0" role="tablist" aria-label="Media files or Edit">
+          {([['media', 'Media files'], ['edit', 'Edit'], ['color', 'Color']] as const).map(([k, text]) => (
+            <button key={k} role="tab" aria-selected={mode === k} onClick={() => setMode(k)}
+              className={`rounded-md px-2.5 py-1 text-xs font-semibold ${mode === k ? 'bg-white text-st-ink shadow-sm' : 'text-st-mute hover:text-st-ink'}`}>{text}</button>
+          ))}
+        </div>
+        {mode === 'media' && ([['footage', `Footage ${d.raw.length}`], ['outputs', `Outputs ${d.out.length}`], ['images', `Images ${d.workImages.length}`], ['docs', `Docs ${docs.length}`]] as const).map(([k, text]) => (
           <button key={k} onClick={() => setTab(k)} aria-pressed={tab === k}
             className={`shrink-0 rounded-md px-2 py-1 text-xs ${tab === k ? 'bg-18-orange/10 text-18-orange font-semibold' : 'text-st-mute hover:text-st-ink hover:bg-st-surface'}`}>{text}</button>
         ))}
       </header>
 
-      <div className="flex-1 overflow-y-auto p-2">
+      {mode === 'edit' ? <div className="flex-1 overflow-y-auto">{editPanel}</div> : mode === 'color' ? <div className="flex-1 overflow-y-auto">{colorPanel}</div> : <div className="flex-1 overflow-y-auto p-2">
         {tab === 'footage' && <AddFootage d={d} bridge={bridge} onChange={onChanged} />}
         {tab === 'docs' ? (
           docs.length ? (
@@ -989,8 +1042,228 @@ function MediaPanel({ boxRef, d, bridge, view, onOpen, onChanged }: { boxRef: Re
             ))}
           </ul>
         ) : tab !== 'footage' && <p className="text-xs text-st-mute p-2">{tab === 'outputs' ? 'Storyboards, style frames, previews, finals and captions appear here as the editor makes them.' : 'Contact sheets and working stills from work/ appear here.'}</p>}
-      </div>
+      </div>}
     </section>
+  );
+}
+
+// The edit with no colour grade anywhere (Color tab "Before"): neutral for the edit and every cut.
+const NEUTRAL = { contrast: 1, saturate: 1, brightness: 1 };
+function ungraded(data: Obj): Obj {
+  return { ...data, grade: NEUTRAL, segments: Array.isArray(data.segments) ? data.segments.map((sg) => (isObj(sg) ? { ...sg, grade: NEUTRAL } : sg)) : data.segments };
+}
+
+// ---------- Edit tab: the clip selected on the timeline ----------
+type Pick = { key: string; index: number }; // where the element is in edit.json (index -1: a single object)
+type Picked = Pick & { kind: string; track: TrackKey; start: number; end: number };
+type SetOp = { path: (string | number)[]; value: unknown };
+// Elements the render draws through its adjustable layer (move / scale / opacity).
+const FX_KEYS = new Set(['segments', 'splitIntro', 'broll', 'splitScreens', 'screenshots', 'columnFocus', 'whiteboards', 'slides', 'titles', 'cards', 'listCards', 'defCards', 'tamBoard', 'tamSummary', 'badgeCards', 'statCards', 'highlights', 'lowerThirds', 'captions']);
+// Sound: which number is the volume, and what it is when not set.
+const SOUND: Record<string, { field: string; label: string; dflt: number }[]> = {
+  segments: [{ field: 'volume', label: 'Volume', dflt: 1 }],
+  sfx: [{ field: 'volume', label: 'Volume', dflt: 0.6 }],
+  music: [{ field: 'volume', label: 'Volume', dflt: 0.25 }, { field: 'duckVolume', label: 'Volume while someone speaks', dflt: 0.08 }],
+};
+const TEXT_KEYS = new Set(['text', 'name', 'role', 'title', 'sub', 'label', 'heading', 'caption']);
+
+function itemAt(data: Obj | null, at: Pick): Obj | null {
+  if (!data) return null;
+  const v = data[at.key];
+  const it = at.index >= 0 ? (Array.isArray(v) ? v[at.index] : null) : v;
+  return isObj(it) ? it : null;
+}
+function applySets(data: Obj, at: Pick, sets: SetOp[]): Obj {
+  const copy = structuredClone(data) as Obj;
+  if (at.index < 0 && at.key === 'grade' && !isObj(copy.grade)) copy.grade = {};
+  if (at.key === 'segments' && at.index === -2) { // every footage cut (Color tab: all clips)
+    const segs = Array.isArray(copy.segments) ? copy.segments.filter(isObj) : [];
+    segs.forEach((sg) => setOn(sg, sets));
+    return copy;
+  }
+  const it = itemAt(copy, at);
+  if (!it) return data;
+  setOn(it, sets);
+  return copy;
+}
+function setOn(it: Obj, sets: SetOp[]) {
+  for (const { path, value } of sets) {
+    if (path[0] === 'fx') { it.fx = isObj(it.fx) ? it.fx : {}; (it.fx as Obj)[String(path[1])] = value; continue; }
+    let o: unknown = it;
+    for (const k of path.slice(0, -1)) {
+      const r = o as Record<string | number, unknown> | null;
+      if (r && typeof k === 'string' && r[k] == null) r[k] = {}; // e.g. the grade's curve, set for the first time
+      o = r?.[k];
+    }
+    if (o && typeof o === 'object') (o as Record<string | number, unknown>)[path[path.length - 1]] = value;
+  }
+}
+// Every piece of text in an element (its own text, a card's lines, a whiteboard's words…).
+function textPaths(it: Obj): { path: (string | number)[]; label: string; value: string }[] {
+  const out: { path: (string | number)[]; label: string; value: string }[] = [];
+  // "Text 3" for the 3rd word group of a whiteboard, "Item 2" for a list row, "Lines 1" for an opener line…
+  const name = (path: (string | number)[]) => {
+    const n = path.length >= 2 && typeof path[path.length - 2] === 'number' ? (path[path.length - 2] as number) + 1 : null;
+    const parent = String(path[path.length - 3] ?? '');
+    if (n != null) return `${parent === 'items' ? 'Item' : parent === 'sub' ? 'Subtitle' : 'Text'} ${n}`;
+    const last = path[path.length - 1];
+    if (typeof last === 'number') return `Line ${last + 1}`;
+    return last.charAt(0).toUpperCase() + last.slice(1);
+  };
+  const walk = (o: unknown, path: (string | number)[], depth: number) => {
+    if (depth > 4) return;
+    if (Array.isArray(o)) {
+      o.forEach((v, i) => {
+        if (typeof v === 'string' && path[path.length - 1] === 'lines') out.push({ path: [...path, i], label: name([...path, i]), value: v });
+        else walk(v, [...path, i], depth + 1);
+      });
+      return;
+    }
+    if (!isObj(o)) return;
+    for (const [k, v] of Object.entries(o)) {
+      if (k === 'fx') continue;
+      if (typeof v === 'string' && TEXT_KEYS.has(k)) out.push({ path: [...path, k], label: name([...path, k]), value: v });
+      else if (v && typeof v === 'object') walk(v, [...path, k], depth + 1);
+    }
+  };
+  walk(it, [], 0);
+  return out;
+}
+
+// The Color tab: one grade for all the footage on the timeline (graphics keep their own colours).
+// Shown as simple sliders; stored in edit.json "grade" (and its tone curve), which the render uses.
+const COLOR_ROWS: { label: string; path: (string)[]; min: number; max: number; step: number; dflt: number; shown: (v: number) => string }[] = [
+  { label: 'Exposure', path: ['exposure'], min: -2, max: 2, step: 0.05, dflt: 0, shown: (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} EV` },
+  { label: 'Brightness', path: ['curve', 'mids'], min: -0.6, max: 0.6, step: 0.01, dflt: 0, shown: (v) => `${v > 0 ? '+' : ''}${Math.round((v / 0.6) * 100)}` },
+  { label: 'Contrast', path: ['contrast'], min: 0.5, max: 1.6, step: 0.01, dflt: 1.05, shown: (v) => `${Math.round(v * 100)}%` },
+  { label: 'Highlights', path: ['curve', 'highlights'], min: -0.3, max: 0.3, step: 0.005, dflt: 0, shown: (v) => `${v > 0 ? '+' : ''}${Math.round((v / 0.3) * 100)}` },
+  { label: 'Whites', path: ['curve', 'whites'], min: -0.3, max: 0.3, step: 0.005, dflt: 0, shown: (v) => `${v > 0 ? '+' : ''}${Math.round((v / 0.3) * 100)}` },
+  { label: 'Blacks', path: ['curve', 'blacks'], min: -0.3, max: 0.3, step: 0.005, dflt: 0, shown: (v) => `${v > 0 ? '+' : ''}${Math.round((v / 0.3) * 100)}` },
+  { label: 'Saturation', path: ['saturate'], min: 0, max: 2, step: 0.01, dflt: 1.05, shown: (v) => `${Math.round(v * 100)}%` },
+  { label: 'Vignette', path: ['vignette'], min: 0, max: 1, step: 0.01, dflt: 0, shown: (v) => `${Math.round(v * 100)}%` },
+];
+// Grades a footage cut: the one selected on the timeline, or every cut when none is selected.
+// A cut without its own grade shows the edit's grade; the first change gives it its own (all values).
+function ColorPanel({ data, pick, onSet, before, onBefore, canCompare }: { data: Obj | null; pick: Picked | null; onSet: (at: Pick, sets: SetOp[]) => void; before: boolean; onBefore: () => void; canCompare: boolean }) {
+  const segs = data && Array.isArray(data.segments) ? data.segments.filter(isObj) : [];
+  if (!data || !segs.length) return <p className="p-4 text-sm text-st-mute">Color grading works on the footage on the timeline. Put footage on the timeline first.</p>;
+  const one = pick?.key === 'segments' && pick.index >= 0 && pick.index < segs.length ? pick.index : null;
+  const target: Pick = { key: 'segments', index: one ?? -2 };
+  const seg = segs[one ?? 0];
+  const g = isObj(seg.grade) ? seg.grade : isObj(data.grade) ? data.grade : {};
+  const at = (path: string[]) => num(path.length === 1 ? g[path[0]] : isObj(g[path[0]]) ? (g[path[0]] as Obj)[path[1]] : null);
+  const values = (change?: { path: string[]; value: number }) => COLOR_ROWS.map((r) => ({
+    path: ['grade', ...r.path], value: change && change.path.join('.') === r.path.join('.') ? change.value : at(r.path) ?? r.dflt,
+  }));
+  const changed = COLOR_ROWS.some((r) => (at(r.path) ?? r.dflt) !== r.dflt);
+  return (
+    <div className="p-3 space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs text-st-mute">
+          {one != null
+            ? <><b className="text-st-ink">Footage clip {one + 1} of {segs.length}</b>{pick ? ` (${fmtTime(pick.start)}–${fmtTime(pick.end)})` : ''}. <b className="text-st-ink">Apply to all clips</b> gives every footage clip this grade.</>
+            : <><b className="text-st-ink">All {segs.length} footage {segs.length === 1 ? 'clip' : 'clips'}</b>: no clip is selected, so changes go to all of them. Click a footage clip on the timeline to grade just that one.</>}
+          {' '}Graphics keep their colours; changes save by themselves (Undo is under the timeline).
+        </p>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {/* Before / After: the preview without the grade, then with it again. Only shows, never saves. */}
+          <button onClick={onBefore} disabled={!canCompare} aria-pressed={before}
+            title={canCompare ? (before ? 'Showing the footage before grading. Click to see the grade again.' : 'Show the footage before grading') : 'Play the timeline with Graphics on to compare'}
+            className={`rounded-full border px-2.5 py-0.5 text-xs font-medium disabled:opacity-40 ${before ? 'border-18-orange bg-18-orange text-white' : 'border-st-line text-st-ink hover:border-18-orange/50'}`}>
+            {before ? 'Before' : 'After'}
+          </button>
+          {one != null && segs.length > 1 && (
+            <button onClick={() => onSet({ key: 'segments', index: -2 }, values())} title="Give every footage clip this clip's grade"
+              className="rounded-full border border-st-line px-2.5 py-0.5 text-xs font-medium text-st-ink hover:border-18-orange/50">Apply to all clips</button>
+          )}
+          {changed && <button onClick={() => onSet(target, COLOR_ROWS.map((r) => ({ path: ['grade', ...r.path], value: r.dflt })))} className="text-xs text-18-orange hover:underline">Reset</button>}
+        </div>
+      </div>
+      {COLOR_ROWS.map((r) => (
+        <EditRow key={r.label} label={r.label} value={at(r.path) ?? r.dflt} min={r.min} max={r.max} step={r.step} shown={r.shown} onChange={(v) => onSet(target, values({ path: r.path, value: v }))} />
+      ))}
+    </div>
+  );
+}
+
+function EditRow({ label, value, min, max, step, shown, onChange }: { label: string; value: number; min: number; max: number; step: number; shown: (v: number) => string; onChange: (v: number) => void }) {
+  return (
+    <label className="block">
+      <span className="flex items-center justify-between text-xs"><span className="font-medium">{label}</span><span className="tabular-nums text-st-mute">{shown(value)}</span></span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="mt-1 w-full accent-[#F37335] cursor-pointer" />
+    </label>
+  );
+}
+
+function EditPanel({ data, pick, onSet }: { data: Obj | null; pick: Picked | null; onSet: (sets: SetOp[]) => void }) {
+  if (!pick) return <p className="p-4 text-sm text-st-mute">Click a clip on the timeline to edit it here: its position, size, opacity, text and volume.</p>;
+  const it = itemAt(data, pick);
+  if (!it) return <p className="p-4 text-sm text-st-mute">That clip is no longer in the edit. Click another clip on the timeline.</p>;
+  const fx = isObj(it.fx) ? it.fx : {};
+  const f = (k: string, dflt: number) => num(fx[k]) ?? dflt;
+  const visual = FX_KEYS.has(pick.key) && pick.track !== 'A1';
+  const sound = SOUND[pick.key] && (pick.key !== 'segments' || pick.track === 'A1' || pick.track === 'V1') ? SOUND[pick.key] : null;
+  const texts = pick.track === 'A1' ? [] : textPaths(it);
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const px = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)} px`;
+  const changed = f('x', 0) !== 0 || f('y', 0) !== 0 || f('scale', 1) !== 1 || f('opacity', 1) !== 1;
+  return (
+    <div className="p-3 space-y-4">
+      <div>
+        <p className="text-sm font-semibold">{pick.track === 'A1' && pick.key === 'segments' ? 'Voice' : pick.kind}</p>
+        <p className="text-xs text-st-mute tabular-nums">{fmtTime(pick.start)} – {fmtTime(pick.end)} · changes show in the preview at once and are saved by themselves (Undo on the timeline reverses them)</p>
+      </div>
+      {visual && (
+        <section className="space-y-3" aria-label="Position, size and opacity">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-st-mute">Position &amp; size</h3>
+            {changed && <button onClick={() => onSet([{ path: ['fx', 'x'], value: 0 }, { path: ['fx', 'y'], value: 0 }, { path: ['fx', 'scale'], value: 1 }, { path: ['fx', 'opacity'], value: 1 }])} className="text-xs text-18-orange hover:underline">Reset</button>}
+          </div>
+          <EditRow label="Move left / right" value={f('x', 0)} min={-1920} max={1920} step={1} shown={px} onChange={(v) => onSet([{ path: ['fx', 'x'], value: v }])} />
+          <EditRow label="Move up / down" value={f('y', 0)} min={-1080} max={1080} step={1} shown={px} onChange={(v) => onSet([{ path: ['fx', 'y'], value: v }])} />
+          <EditRow label="Scale" value={f('scale', 1)} min={0.1} max={3} step={0.01} shown={pct} onChange={(v) => onSet([{ path: ['fx', 'scale'], value: v }])} />
+          <EditRow label="Opacity" value={f('opacity', 1)} min={0} max={1} step={0.01} shown={pct} onChange={(v) => onSet([{ path: ['fx', 'opacity'], value: v }])} />
+        </section>
+      )}
+      {pick.key === 'whiteboards' && !it.noPip && (() => {
+        // The round speaker picture: which part of the footage shows in it (the circle itself stays
+        // bottom right). Shown as moves of the speaker, so right means the person moves right.
+        const cx = num(it.pipCx) ?? 960, cy = num(it.pipCy) ?? 560, zoom = num(it.pipScale) ?? 0.42;
+        const changedPip = it.pipCx != null || it.pipCy != null || it.pipScale != null;
+        return (
+          <section className="space-y-3" aria-label="Speaker circle">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-st-mute">Speaker circle</h3>
+              {changedPip && <button onClick={() => onSet([{ path: ['pipCx'], value: 960 }, { path: ['pipCy'], value: 560 }, { path: ['pipScale'], value: 0.42 }])} className="text-xs text-18-orange hover:underline">Reset</button>}
+            </div>
+            <EditRow label="Move speaker left / right (+ is right)" value={Math.round(960 - cx)} min={-600} max={600} step={1} shown={px} onChange={(v) => onSet([{ path: ['pipCx'], value: 960 - v }])} />
+            <EditRow label="Move speaker up / down (+ is down)" value={Math.round(560 - cy)} min={-500} max={500} step={1} shown={px} onChange={(v) => onSet([{ path: ['pipCy'], value: 560 - v }])} />
+            <EditRow label="Zoom" value={zoom} min={0.2} max={1.2} step={0.01} shown={(v) => `${Math.round((v / 0.42) * 100)}%`} onChange={(v) => onSet([{ path: ['pipScale'], value: v }])} />
+          </section>
+        );
+      })()}
+      {texts.length > 0 && (
+        <section className="space-y-2" aria-label="Text">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-st-mute">Text</h3>
+          {texts.map((x) => (
+            <label key={JSON.stringify(x.path)} className="block">
+              {texts.length > 1 && <span className="text-[11px] text-st-mute">{x.label}</span>}
+              <textarea value={x.value} rows={Math.min(4, Math.max(1, Math.ceil(x.value.length / 38)))} onChange={(e) => onSet([{ path: x.path, value: e.target.value }])}
+                className={`${field} !min-h-0 !py-1.5 text-sm resize-y`} />
+            </label>
+          ))}
+        </section>
+      )}
+      {sound && (
+        <section className="space-y-3" aria-label="Sound">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-st-mute">Sound</h3>
+          {sound.map((x) => (
+            <EditRow key={x.field} label={x.label} value={num(it[x.field]) ?? x.dflt} min={0} max={2} step={0.01} shown={pct} onChange={(v) => onSet([{ path: [x.field], value: v }])} />
+          ))}
+        </section>
+      )}
+      {!visual && !texts.length && !sound && <p className="text-sm text-st-mute">This kind of clip has nothing to adjust here. Ask the AI editor to change it.</p>}
+    </div>
   );
 }
 
@@ -1091,6 +1364,34 @@ function AddFootage({ d, bridge, onChange }: { d: Detail; bridge: Bridge; onChan
 
 // ---------- preview player ----------
 // Play / pause and a scrub bar over the timeline (the edit's length), used while the player plays the timeline.
+// The player's control bar. While playing it fades out 1 second after the mouse last moved over the
+// player (and the pointer hides too, handy in full screen); moving the mouse brings it back. It stays
+// while the mouse is on the bar itself, and always while paused.
+function ControlBar({ playing, children }: { playing: boolean; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(true);
+  useEffect(() => {
+    const host = ref.current?.parentElement;
+    if (!host) return;
+    let h: ReturnType<typeof setTimeout> | undefined;
+    const show = (on: boolean) => { setShown(on); host.style.cursor = on ? '' : 'none'; };
+    const poke = () => {
+      show(true);
+      clearTimeout(h);
+      if (playing) h = setTimeout(function hide() { if (ref.current?.matches(':hover')) h = setTimeout(hide, 1000); else show(false); }, 1000);
+    };
+    poke();
+    host.addEventListener('mousemove', poke);
+    host.addEventListener('pointerdown', poke);
+    return () => { clearTimeout(h); host.removeEventListener('mousemove', poke); host.removeEventListener('pointerdown', poke); host.style.cursor = ''; };
+  }, [playing]);
+  return (
+    <div ref={ref} className={`absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs transition-opacity duration-300 ${shown ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+      {children}
+    </div>
+  );
+}
+
 function TimelineControls({ clock, video }: { clock: Clock; video: HTMLVideoElement | null }) {
   const { t, duration } = useSyncExternalStore(clock.sub, clock.get, clock.get);
   const [playing, setPlaying] = useState(false);
@@ -1109,14 +1410,14 @@ function TimelineControls({ clock, video }: { clock: Clock; video: HTMLVideoElem
     void video.play().catch(() => {});
   };
   return (
-    <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs">
+    <ControlBar playing={playing}>
       <button onClick={toggle} className="p-1 rounded hover:bg-white/15" aria-label={playing ? 'Pause' : 'Play'}>
         {playing ? <Square size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
       </button>
       <span className="tabular-nums shrink-0">{fmtTime(t)} / {fmtTime(duration)}</span>
       <input type="range" min={0} max={duration || 0} step={0.01} value={Math.min(t, duration || 0)} aria-label="Timeline position"
         onChange={(e) => clock.seek(Number(e.target.value))} className="flex-1 accent-[#F37335] cursor-pointer" />
-    </div>
+    </ControlBar>
   );
 }
 
@@ -1127,6 +1428,37 @@ function LivePreview({ bridge, live, props }: { bridge: Bridge; live: Live; prop
   const st = useSyncExternalStore(live.sub, live.get, live.get);
   const propsRef = useRef(props);
   propsRef.current = props;
+  // The preview's code can change (a Remotion update, new effects). Check every few seconds and when
+  // the page comes back into view; when it changed, load the preview again at the same moment.
+  const [gen, setGen] = useState(0);
+  useEffect(() => {
+    let seen: number | null = null;
+    let stop = false;
+    const check = async () => {
+      try {
+        const r = await fetch(`${BRIDGE}/api/live/${encodeURIComponent(bridge.token)}/version`, { cache: 'no-store' });
+        const { v } = (await r.json()) as { v: number };
+        if (stop) return;
+        if (seen != null && v !== seen) { const t = live.get().t; live.attach(null); setGen((g) => g + 1); live.seek(t); }
+        seen = v;
+      } catch { /* the bridge is restarting: try again next time */ }
+    };
+    void check();
+    const h = setInterval(check, 4000);
+    const vis = () => { if (document.visibilityState === 'visible') void check(); };
+    document.addEventListener('visibilitychange', vis);
+    return () => { stop = true; clearInterval(h); document.removeEventListener('visibilitychange', vis); };
+  }, [bridge, live]);
+  // After a drawing error, the next change to the edit loads the preview again (at the same moment).
+  const failed = useRef(false);
+  failed.current = !!st.error;
+  useEffect(() => {
+    if (!failed.current) return;
+    const t = live.get().t;
+    live.attach(null);
+    setGen((g) => g + 1);
+    live.seek(t);
+  }, [props, live]);
   useEffect(() => {
     const on = (e: MessageEvent) => {
       if (e.origin !== BRIDGE || e.source !== frame.current?.contentWindow || !e.data || typeof e.data !== 'object') return;
@@ -1141,8 +1473,8 @@ function LivePreview({ bridge, live, props }: { bridge: Bridge; live: Live; prop
   useEffect(() => { if (st.ready) live.post({ type: 'props', props }); }, [props, st.ready, live]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <>
-      <iframe ref={frame} title="Live preview with graphics" src={`${BRIDGE}/api/live/${encodeURIComponent(bridge.token)}/`} allow="autoplay; fullscreen"
-        className="absolute inset-0 w-full h-full border-0 bg-black" />
+      <iframe key={gen} ref={frame} title="Live preview with graphics" src={`${BRIDGE}/api/live/${encodeURIComponent(bridge.token)}/`} allow="autoplay; fullscreen"
+        className="absolute inset-0 w-full h-full border-0 bg-black pointer-events-none" />
       {!st.ready && !st.error && <p className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-white/70 pointer-events-none"><Spinner /> Loading the live preview…</p>}
       {st.error && <p role="alert" className="absolute top-2 inset-x-2 text-xs bg-red-600/90 text-white rounded-md px-3 py-2">{st.error} Turn Graphics off to play the footage cuts.</p>}
     </>
@@ -1156,22 +1488,34 @@ function LiveControls({ clock, live }: { clock: Clock; live: Live }) {
     live.toggle();
   };
   return (
-    <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs">
+    <ControlBar playing={playing}>
       <button onClick={toggle} className="p-1 rounded hover:bg-white/15" aria-label={playing ? 'Pause' : 'Play'}>
         {playing ? <Square size={14} fill="currentColor" aria-hidden /> : <Play size={14} fill="currentColor" aria-hidden />}
       </button>
       <span className="tabular-nums shrink-0">{fmtTime(t)} / {fmtTime(duration)}</span>
       <input type="range" min={0} max={duration || 0} step={0.01} value={Math.min(t, duration || 0)} aria-label="Timeline position"
         onChange={(e) => clock.seek(Number(e.target.value))} className="flex-1 accent-[#F37335] cursor-pointer" />
-    </div>
+    </ControlBar>
   );
 }
 
-function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical, clock, canPlayTimeline, onPlayTimeline, live, liveProps, canLive, graphics, onGraphics }: {
+function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical, clock, canPlayTimeline, onPlayTimeline, live, liveProps, canLive, liveAvailable, graphics, onGraphics, badge }: {
   width: number | null; d: Detail; bridge: Bridge; view: View | null; onVideo: (v: HTMLVideoElement | null) => void; program: FileInfo | null; onProgram: () => void; vertical: boolean;
   clock: Clock; canPlayTimeline: boolean; onPlayTimeline: () => void;
-  live: Live | null; liveProps: Record<string, unknown> | null; canLive: boolean; graphics: boolean; onGraphics: () => void;
+  live: Live | null; liveProps: Record<string, unknown> | null; canLive: boolean; liveAvailable: boolean; graphics: boolean; onGraphics: () => void;
+  badge?: string | null; // a small label on the picture, e.g. while showing the footage before its grade
 }) {
+  // Full screen shows the edit: it switches to the timeline (with graphics, when the edit has them)
+  // and makes the player frame fill the screen, with its play / time / scrub controls. Esc leaves.
+  const frameRef = useRef<HTMLDivElement>(null);
+  function fullScreen() {
+    const el = frameRef.current;
+    if (!el) return;
+    if (canPlayTimeline && !(view?.kind === 'video' && view.timeline)) onPlayTimeline();
+    if (canPlayTimeline && liveAvailable && !graphics) onGraphics();
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void el.requestFullscreen().catch(() => {});
+  }
   const tlMode = view?.kind === 'video' && !!view.timeline;
   // The frame is always the delivery size: 1920 × 1080 (16:9), or 1080 × 1920 for 9:16 Shorts.
   const [fw, fh] = vertical ? [1080, 1920] : [1920, 1080];
@@ -1217,12 +1561,16 @@ function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical,
         {!tlMode && canPlayTimeline && <button onClick={onPlayTimeline} className="text-xs text-18-orange hover:underline shrink-0">Play timeline</button>}
         <span className="text-[11px] text-st-mute tabular-nums shrink-0" title="Frame size">{fw} × {fh}</span>
         {program && view?.path !== program.path && <button onClick={onProgram} className="text-xs text-18-orange hover:underline shrink-0">Show the edit</button>}
-        {view && <a href={url} target="_blank" rel="noreferrer" className="p-1 text-st-mute hover:text-st-ink" aria-label="Open in a new tab"><Maximize2 size={15} /></a>}
-        {view && <a href={bridge.fileUrl(d.id, view.path, true)} className="p-1 text-st-mute hover:text-st-ink" aria-label="Download"><Download size={15} /></a>}
+        {(view || canPlayTimeline) && (
+          <button onClick={fullScreen} className="p-1 text-st-mute hover:text-st-ink" aria-label="Full screen: the edited version"
+            title={canPlayTimeline ? 'Full screen: plays the edited version (the timeline, with its graphics). Esc to leave.' : 'Full screen (Esc to leave)'}><Maximize2 size={15} /></button>
+        )}
       </header>
       {/* The available space is a size container; the frame inside is the largest box with the
           delivery aspect ratio that fits it (min of full width, or full height × ratio). */}
-      <div className={`flex-1 min-h-0 bg-black relative flex items-center justify-center ${vertical ? 'aspect-[9/16] max-h-[70vh] lg:max-h-none' : 'aspect-video'} lg:aspect-auto`} style={{ containerType: 'size' }}>
+      {/* The 16:9 box: the frame sits in it (black around a vertical edit); the timeline controls and
+          full screen belong to the whole box, so they span its full width. */}
+      <div ref={frameRef} className={`flex-1 min-h-0 bg-black relative flex items-center justify-center aspect-video lg:aspect-auto`} style={{ containerType: 'size' }}>
         <div className="relative bg-black flex items-center justify-center overflow-hidden"
           style={{ aspectRatio: `${fw} / ${fh}`, width: `min(100cqw, calc(100cqh * ${fw} / ${fh}))` }}>
           {/* One video element for the whole session: the meter's audio graph stays attached to it. */}
@@ -1230,13 +1578,14 @@ function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical,
           <video ref={setVid} src={isVideo ? url : undefined} controls={!tlMode} crossOrigin="anonymous" preload="metadata" playsInline
             className={`w-full h-full object-contain ${isVideo && !live ? '' : 'hidden'}`} />
           {live && liveProps && <LivePreview bridge={bridge} live={live} props={liveProps} />}
-          {tlMode && (live ? <LiveControls clock={clock} live={live} /> : <TimelineControls clock={clock} video={vid.current} />)}
+          {badge && <span className="absolute left-2 top-2 z-10 rounded-md bg-black/70 px-2 py-1 text-[11px] font-medium text-white pointer-events-none">{badge}</span>}
           {view?.kind === 'image' && (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={url} alt={view.name} className="w-full h-full object-contain" />
           )}
           {!view && <p className="text-sm text-white/60 p-6 text-center">Add footage, or pick a file in Media files to play it here.</p>}
         </div>
+        {tlMode && (live ? <LiveControls clock={clock} live={live} /> : <TimelineControls clock={clock} video={vid.current} />)}
         {view?.kind === 'doc' && <div className="absolute inset-0 overflow-y-auto bg-white p-5">{doc == null ? <Spinner /> : /\.srt$/i.test(view.path) ? <pre className="text-xs whitespace-pre-wrap font-mono">{doc}</pre> : <Md text={doc} />}</div>}
       </div>
     </section>
@@ -1346,7 +1695,7 @@ function Modal({ title, sub, wide, onClose, children, footer }: { title: string;
 // Renders the edit straight from work/edit.json (no AI turn), with the skill's settings:
 // preview = 720p copy under 30 MB for phone review, final = 1080p high quality.
 type ExportFile = { path: string; size: number; modified: number } | null;
-type ExportJob = { mode: 'preview' | 'final'; state: 'running' | 'done' | 'failed' | 'cancelled'; stage: string; pct: number; file: string | null; size: number | null; error: string | null; started: number; ended?: number };
+type ExportJob = { mode: 'preview' | 'final'; state: 'running' | 'done' | 'failed' | 'cancelled'; stage: string; pct: number; file: string | null; size: number | null; error: string | null; note?: string; started: number; ended?: number };
 type ExportInfo = { ready: boolean; props: string | null; propsModified: number | null; final: ExportFile; preview: ExportFile; job: ExportJob | null; busy: { id: string; kind: string } | null };
 
 const EXPORTS = [
@@ -1427,6 +1776,7 @@ function ExportButton({ id, bridge, onDone, onPlay }: { id: string; bridge: Brid
                     </div>
                   )}
                   {mine?.state === 'failed' && <p className="mt-3 text-xs text-red-700 break-words">Export failed: {mine.error}</p>}
+                  {mine?.state === 'done' && mine.note && <p className="mt-3 text-xs text-amber-900 break-words">{mine.note}</p>}
                   {mine?.state === 'cancelled' && <p className="mt-3 text-xs text-st-mute">Export cancelled. The previous file, if any, is unchanged.</p>}
 
                   {have && mine?.state !== 'running' && (
@@ -2001,13 +2351,14 @@ function Tip({ label, keys, children, wide }: { label: string; keys?: string; ch
 
 const SPEEDS = [1, 1.5, 2, 2.5, 3];
 
-function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath, programFresh, programName, clock, timelineMode, live: liveCtl, onOpen, muted, onMute, onAsk, onDropMedia, notice, onUndo, onDismiss, magnetic, onMagnetic, markers, onMarkers, onEdit }: {
+function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath, programFresh, programName, clock, timelineMode, live: liveCtl, onOpen, muted, onMute, onAsk, onDropMedia, notice, onUndo, onDismiss, magnetic, onMagnetic, markers, onMarkers, onEdit, onPick }: {
   data: Obj | null; file: string | null; srcPrefix: string; video: HTMLVideoElement | null; player: HTMLVideoElement | null;
   viewPath: string | null; programPath: string | null; programFresh: boolean; programName: string | null; clock: Clock; timelineMode: boolean; live: Live | null;
   onOpen: (path: string, start: number, play: boolean) => void; muted: boolean; onMute: () => void; onAsk: (c: Clip) => void;
   onDropMedia: (m: DropMedia, track: TrackKey, at: number) => void;
   notice: { text: string; error?: boolean; undo?: boolean } | null; onUndo: () => void; onDismiss: () => void;
   magnetic: boolean; onMagnetic: () => void; markers: number[]; onMarkers: (m: number[]) => void; onEdit: (e: TimelineEdit) => void;
+  onPick?: (p: Picked | null) => void; // one clip selected: it opens in the Edit tab
 }) {
   const { clips, duration } = useMemo(() => (data ? buildClips(data) : { clips: [], duration: 0 }), [data]);
   // Playback speed: each click goes 1x → 1.5x → 2x → 2.5x → 3x → 1x. It applies to both players and the
@@ -2029,9 +2380,17 @@ function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath,
   // Selected clips (by id). One clip shows its details below the timeline; several can be deleted together.
   const [selIds, setSelIds] = useState<string[]>([]);
   const selClips = useMemo(() => clips.filter((c) => selIds.includes(c.id)), [clips, selIds]);
+  const one = selClips.length === 1 ? selClips[0] : null;
+  const oneKey = one ? `${one.ref.key}:${one.ref.index}:${one.track}` : '';
+  useEffect(() => {
+    onPick?.(one ? { key: one.ref.key, index: one.ref.index, kind: one.kind, track: one.track, start: one.start, end: one.end } : null);
+  }, [oneKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const sel = selClips.length === 1 ? selClips[0] : null;
   const setSel = (c: Clip | null) => setSelIds(c ? [c.id] : []);
-  useEffect(() => { setSelIds([]); }, [clips]); // clips are renumbered after every change
+  // Clips are renumbered when they are added, removed or moved: the selection is cleared then. Not for
+  // a reload of the same clips or an Edit-tab change (text, position, volume), so the clip stays selected.
+  const clipSig = useMemo(() => clips.map((c) => `${c.id}|${c.ref.key}|${c.ref.index}|${c.start.toFixed(3)}|${c.end.toFixed(3)}`).join(','), [clips]);
+  useEffect(() => { setSelIds([]); }, [clipSig]);
   const [box, setBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null); // drag-select rectangle (page px)
   const dragged = useRef(false);
   const [tool, setTool] = useState<'select' | 'cut'>('select');
