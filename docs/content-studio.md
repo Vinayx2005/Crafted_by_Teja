@@ -93,6 +93,20 @@ Material about the brand that the writer can use as fact: product details, past 
 - **Who can do what.** Viewers can read the list; Editors and above add, edit and delete.
 - **One-time setup.** The table is created by `migrations/studio_knowledge.sql` (check with `studio_knowledge_validate.sql`, undo with `studio_knowledge_rollback.sql`). It is server only: the browser cannot read it directly. Until it is run, the screen says so and script writing carries on without knowledge.
 
+### 2.3b Content Calendar
+
+The sidebar's **Content Calendar** (`?section=calendar`, `app/studio/[id]/calendar.tsx`) plans what the brand posts.
+
+- **Views.** Month view is the default. The small **Month** drop-down at the top right switches to Week view, which gives each day a tall column with the full topic and its platforms. The arrows move a month or a week; **Today** jumps back.
+- **The + on every day** offers three things:
+  - **Add a topic**: a topic, optional platforms and notes, on that date.
+  - **Repeating topic**: the same form with Repeat on (every day, every weekday, every week, every 2 weeks or every month), with an optional end date. It is stored once and shown on every date it falls on. A monthly topic on the 31st falls on the last day of shorter months. Changing or removing it changes every date.
+  - **Create with AI**: the Create flow (platforms, topic, script) in a popup on the calendar. Each script it writes is saved in the Library as usual and added to that day. Clicking it later shows the script with a Copy button.
+- **Completed.** Click a topic and press **Completed** beside Remove; it turns green with a tick. For a repeating topic it marks only the date you clicked. Press it again to undo. Needs `migrations/studio_calendar_done.sql` run once.
+- **Colours.** Solid and bright, with white text: topics violet, repeating ones blue, ones with an AI script orange, completed ones green. A key sits under the calendar.
+- **Who can do what.** Viewers see the calendar; Editors and above add, change and remove topics (database rules, so this holds even outside the app).
+- **One-time setup.** The table is created by `migrations/studio_calendar.sql` (undo with `studio_calendar_rollback.sql`); it needs the organisation migrations first. Until it is run, the screen says so.
+
 ### 2.4 Competition tab
 
 - **Find creators:** type a topic or a creator's name, or paste a YouTube channel link or `@handle`. Results show subscribers and video count. **Add to competition** puts the creator on the list.
@@ -199,6 +213,7 @@ All tables are in the `public` schema and are created by `migrations/studio.sql`
 | `studio_content`, `studio_content_versions`, `studio_content_feedback` | The general content store for the coming universal engine (Phase 3). Existing scripts were copied in; the classic screens still use `studio_scripts` for now | content with immutable versions and feedback |
 | `studio_ai_usage` | One row per AI call, for limits (server only) | `organisation_id`, `user_id`, `action` |
 | `studio_knowledge` | Knowledge (text of uploaded documents and notes). Server only | `brand_id`, `title`, `kind` (`text` or `file`), `file_name`, `content` |
+| `studio_calendar` | Content Calendar topics. Viewer reads, Editor changes | `brand_id`, `day`, `topic`, `notes`, `platforms`, `repeat` (`none`, `daily`, `weekdays`, `weekly`, `biweekly`, `monthly`), `repeat_until`, `script_id`, `done_days` (dates marked completed) |
 | `studio_pages`, `studio_members` | **Legacy.** Kept unchanged for rollback only. Nothing reads them any more | |
 | `studio_competitors` | A creator being studied | `page_id`, `platform` (`youtube` or `instagram`), `ext_id` (channel id or username), `name`, `followers`, `summary jsonb` (the per-creator playbook), `analyzed_at`. Unique per page/platform/`ext_id` |
 | `studio_videos` | Videos of a competitor | `competitor_id`, `ext_id`, `title`, `caption`, `published_at`, `views`, `likes`, `comments`, `duration_s`, `is_short`, `transcript`, `hook`, `structure jsonb`, `analyzed_at`. Unique per competitor/`ext_id` |

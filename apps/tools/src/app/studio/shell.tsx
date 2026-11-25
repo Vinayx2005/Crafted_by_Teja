@@ -7,7 +7,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { BookOpen, Check, ChevronDown, ChevronsLeft, ChevronsRight, Clapperboard, FolderOpen, Home, LogOut, Menu, Palette, Search, Sparkles, X } from 'lucide-react';
+import { BookOpen, CalendarDays, Check, ChevronDown, ChevronsLeft, ChevronsRight, Clapperboard, FolderOpen, Home, LogOut, Menu, Palette, Search, X } from 'lucide-react';
 import { api, configured, errorText, supabase } from '@/lib/studio/client';
 import { btn, btnGhost, card, ErrorNote, field, label, menuItem, Popover, Spinner } from './ui';
 
@@ -90,7 +90,7 @@ const Box = ({ children }: { children: React.ReactNode }) => <div className={`${
 
 const NAV = [
   { key: 'home', label: 'Home', icon: Home },
-  { key: 'create', label: 'Create', icon: Sparkles },
+  { key: 'calendar', label: 'Content Calendar', icon: CalendarDays },
   { key: 'library', label: 'Library', icon: FolderOpen },
   { key: 'knowledge', label: 'Knowledge', icon: BookOpen },
   { key: 'video', label: 'Video Editor', icon: Clapperboard },
@@ -111,10 +111,10 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
 
   const brandId = pathname.match(/^\/studio\/([0-9a-f-]{36})/i)?.[1] ?? '';
   // The old Silence remover section is now part of the Video Editor (Remove pauses & fillers).
-  const asked = brandId ? params.get('section') || 'create' : 'home';
+  const asked = brandId ? params.get('section') || 'calendar' : 'home';
   const section = asked === 'silence' ? 'video' : asked;
-  // The Video Editor gets the whole width (timeline, chat beside the outputs).
-  const wide = section === 'video';
+  // The Video Editor and the Content Calendar get the whole width (timeline, chat beside the outputs).
+  const wide = section === 'video' || section === 'calendar';
 
   // Fresh on every screen change, so a new or archived brand shows up straight away.
   useEffect(() => {
@@ -141,7 +141,7 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
       </div>
       <ul className={`${small ? 'px-2' : 'px-3'} py-2 space-y-0.5`}>
         {NAV.map(({ key, label: text, icon: Icon }) => {
-          const active = section === key;
+          const active = section === key || (section === 'create' && key === 'library'); // Create is reached from the calendar or an opened script
           return (
             <li key={key}>
               <Link
@@ -202,7 +202,7 @@ function Frame({ email, orgs, children }: { email: string; orgs: Org[]; children
             {(close) => (
               <div role="listbox" aria-label="Brands">
                 {brands.map((b) => (
-                  <Link key={b.id} href={`/studio/${b.id}?section=${brandId ? section : 'create'}`} onClick={close} role="option" aria-selected={b.id === brandId} className={`${menuItem} justify-between`}>
+                  <Link key={b.id} href={`/studio/${b.id}?section=${brandId ? section : 'calendar'}`} onClick={close} role="option" aria-selected={b.id === brandId} className={`${menuItem} justify-between`}>
                     <span className="truncate">{b.name}</span>
                     {b.id === brandId && <Check size={14} className="text-18-orange shrink-0" aria-hidden />}
                   </Link>

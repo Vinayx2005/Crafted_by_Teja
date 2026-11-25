@@ -79,7 +79,7 @@ export default function StudioHome() {
       ) : (
         <div className="grid sm:grid-cols-2 gap-3">
           {pages.map((p) => (
-            <Link key={p.id} href={`/studio/${p.id}?section=create`} className={`${card} group p-5 hover:border-18-orange/40 transition`}>
+            <Link key={p.id} href={`/studio/${p.id}?section=calendar`} className={`${card} group p-5 hover:border-18-orange/40 transition`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h2 className="font-semibold text-st-ink truncate">{p.name}</h2>

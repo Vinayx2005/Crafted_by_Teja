@@ -12,22 +12,23 @@ import { api, errorText, supabase } from '@/lib/studio/client';
 import type { Page } from '@/lib/studio/shared';
 import PageForm, { type PageValues } from '../page-form';
 import { btnGhost, card, ErrorNote, Spinner, useConfirm } from '../ui';
+import Calendar from './calendar';
 import Competition from './competition';
 import { Direction, PlaybookBox, usePlaybook } from './learnings';
 import Knowledge from './knowledge';
 import VideoEditor from './video-editor';
 import Work from './work';
 
-const TITLES: Record<string, string> = { create: 'Create', library: 'Library', knowledge: 'Knowledge', video: 'Video Editor', research: 'Research', settings: 'Brand Settings' };
+const TITLES: Record<string, string> = { create: 'Create', calendar: 'Content Calendar', library: 'Library', knowledge: 'Knowledge', video: 'Video Editor', research: 'Research', settings: 'Brand Settings' };
 
 export default function BrandScreen() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const params = useSearchParams();
   // ?section=silence (the old Silence remover) opens the Video Editor, which has it as Remove pauses & fillers.
-  const asked = params.get('section') ?? 'create';
+  const asked = params.get('section') ?? 'calendar';
   const raw = asked === 'silence' ? 'video' : asked;
-  const section = raw in TITLES ? raw : 'create';
+  const section = raw in TITLES ? raw : 'calendar';
   const [page, setPage] = useState<Page | null>(null);
   const [videoActions, setVideoActions] = useState<HTMLElement | null>(null); // header spot for the Video Editor's buttons
   const [videoOpen, setVideoOpen] = useState(false); // a Video Editor project is open: no page title
@@ -81,8 +82,9 @@ export default function BrandScreen() {
   return (
     <div>
       {dialog}
-      {/* Inside a Video Editor project the project's own bar is the title, so this one is hidden. */}
-      <header className={`mb-6 flex flex-wrap items-end justify-between gap-3 ${section === 'video' && videoOpen ? 'hidden' : ''}`}>
+      {/* Inside a Video Editor project the project's own bar is the title, so this one is hidden. The
+          Content Calendar's month name is its title, which leaves the whole screen for the month. */}
+      <header className={`mb-6 flex flex-wrap items-end justify-between gap-3 ${(section === 'video' && videoOpen) || section === 'calendar' ? 'hidden' : ''}`}>
         <div>
           <p className="text-xs text-st-mute">{page.name} <span aria-hidden>/</span> {TITLES[section]}</p>
           <h1 className="text-xl font-semibold tracking-tight mt-1">{TITLES[section]}</h1>
@@ -94,6 +96,8 @@ export default function BrandScreen() {
       <div hidden={section !== 'create' && section !== 'library'}>
         <Work page={page} view={section === 'library' ? 'library' : 'create'} onOpened={() => router.replace(`/studio/${id}?section=create`)} />
       </div>
+
+      <div hidden={section !== 'calendar'}><Calendar page={page} /></div>
 
       <div hidden={section !== 'knowledge'}><Knowledge page={page} /></div>
 

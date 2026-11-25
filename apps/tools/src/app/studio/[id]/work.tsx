@@ -23,10 +23,13 @@ type Draft = { platform: string; versions: Script[]; active: number; thumb: 'up'
 const newDraft = (platform: string, versions: Script[]): Draft => ({ platform, versions, active: versions.length - 1, thumb: null, note: '', rating: versions[versions.length - 1]?.rating ?? 0 });
 type Learned = { count: number; up: number; down: number; notes: { section: string; sentiment: 'up' | 'down' | null; note: string }[] };
 
-export default function Work({ page, view, onOpened }: { page: Page; view: 'create' | 'library'; onOpened: () => void }) {
+// `embed`: the same Create flow inside another screen's popup (the Content Calendar). It starts
+// with the given topic, leaves out the insights panel and reports each script it writes.
+export type Written = { topic: string; platforms: string[]; scriptId: string };
+export default function Work({ page, view, onOpened, embed }: { page: Page; view: 'create' | 'library'; onOpened: () => void; embed?: { brief?: string; onWritten?: (w: Written) => void } }) {
   const [step, setStep] = useState(1);
   const [platforms, setPlatforms] = useState<string[]>((page.supported_platforms ?? []).filter((p) => PLATFORM_OPTIONS.includes(p)));
-  const [brief, setBrief] = useState('');
+  const [brief, setBrief] = useState(embed?.brief ?? '');
   const [redditMode, setRedditMode] = useState<'post' | 'reply' | null>(null); // asked once Reddit is picked
   const [replyTo, setReplyTo] = useState(''); // the Reddit comment a reply answers
   const [opinion, setOpinion] = useState(''); // the team's own view; the script is written from it
@@ -67,8 +70,8 @@ export default function Work({ page, view, onOpened }: { page: Page; view: 'crea
 
   // A new step starts at the top of the page.
   useEffect(() => {
-    document.getElementById('studio-main')?.scrollTo({ top: 0 });
-  }, [step]);
+    if (!embed) document.getElementById('studio-main')?.scrollTo({ top: 0 });
+  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshSide = async () => {
     const sb = supabase();
@@ -134,6 +137,7 @@ export default function Work({ page, view, onOpened }: { page: Page; view: 'crea
       setDrafts(made);
       setTab(0);
       setStep(3);
+      embed?.onWritten?.({ topic: plan.title, platforms: made.map((d) => d.platform).filter(Boolean), scriptId: made[0].versions[0].id });
       if (failed) setError(`${failed} of ${results.length} platform versions could not be written. Press "New script" and try again for those.`);
       refreshSide();
     });
@@ -471,7 +475,7 @@ export default function Work({ page, view, onOpened }: { page: Page; view: 'crea
           </section>
         )}
 
-        <Insights learned={learned} />
+        {!embed && <Insights learned={learned} />}
       </div>
     </div>
   );
