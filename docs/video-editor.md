@@ -215,16 +215,18 @@ The Silence remover opens over the editor, working directly on the video in the 
 - **Reopening shows the work done:** after **Apply to timeline**, opening **Remove pauses & fillers** again opens the same session, with every removed part, setting and choice as you left it. The header says *Your last result is on the timeline*. Change anything and press **Apply to timeline** again: it re-applies from the timeline as it was before the first Apply (kept in `work/editor/silence-basis.json`), so nothing is cut twice and graphics are not moved twice. If the timeline's cuts have changed since (other cuts, deletes, drops, or Undo), it starts on the timeline as it is now.
 - **Apply to timeline** (header button): puts the result straight onto the timeline. Every footage cut is trimmed to the parts kept, frame-accurately, from the original files (nothing is re-encoded). With **Magnetic** on, graphics, captions and sounds after each removed pause move earlier with the speech. The popup closes, and the timeline and the timeline preview show the shorter edit at once, with **Undo** in the bar under the timeline header.
 - **Straight to removing silences:** it opens on the whole video, with the silences already checked. **Change part** limits it to a section.
-- **Continues where you left off:** there is one saved session per video, so closing and reopening the popup keeps your cuts and settings.
+- **Continues where you left off:** every change is auto-saved (one session per video, kept in the project folder). Closing the popup only hides it, so anything still running (reading the sound, listening to the words) carries on, and opening it again shows it exactly as you left it: same playhead, zoom, scroll and selection, with no reloading of the video. After a page reload, or once the timeline's footage has changed, it opens fresh and loads the saved session (your cuts, found parts and settings).
 - **Video:** read from `D:\Editing` through the bridge, with a progress bar. It is not copied into the browser, so large files don't fill browser storage.
-- **All the Silence remover's tools:** **Find unwanted parts**, settings, cut/keep, preview the edited version. Its buttons (Back to the editor, Change part, Restart, Settings, Save project, Export…) sit in the popup header.
+- **All the Silence remover's tools:** **Find unwanted parts**, settings, cut/keep, preview the edited version. Its buttons (Back to the editor, Restart, Settings) sit in the popup header next to the title, with **Apply to timeline** on the right.
 - **What it saves into the edit:** anything you export or save (it is still downloaded as before) is also saved into the edit:
   - the **exported video** goes to `raw/`, where it shows under Media files → Footage;
   - the **cut list** and **project file** (`.silence.json`) go to `work/`.
 
   The popup footer lists each saved file, with **Play** for the video.
 - **Use it in the edit:** tells the AI editor to use the new cut (`raw/<name>`) as the source from now on, mentioning the cut list. The AI editor then rebuilds the frame-accurate source from it.
-- **Closing:** **Back to the editor**, ✕ or **Esc**. The session also appears on the sidebar's Silence remover page, marked *from the Video Editor*.
+- **Closing:** **Back to the editor**, ✕ or **Esc**.
+- **Hide removed parts** (checkbox under the player, next to *Preview the edited version*): the timeline shows only what is kept, joined into one waveform, with its ruler in edited time and a thin line at each join. Clicking, the playhead and the eye buttons follow the joined time; unwanted parts not removed yet still show in red. Untick it to see and drag the removed parts again. It only changes the view, not the edit.
+- **Timeline colours:** gray = a removed silence, red = a removed unwanted part, red outline = an unwanted part found but not removed yet, red-and-gray stripes = a silence and an unwanted part covering the same time (labelled *Overlap*). The eye buttons sit on top of all of them.
 
 ### Timeline (bottom)
 The timeline is read from the props that drive the Remotion render: `work/edit.json` (or `work/promo.json` for promo videos), so it shows the real edit at its real times.
@@ -300,6 +302,7 @@ The keys do nothing while you type in a box, or while a dialog or the Silence re
 - Type answers, approvals or changes in plain words, for example *"at 0:24 move the card to the left"*. **Enter** sends; **Shift+Enter** starts a new line.
 - The editor's replies appear as text. Its background work (running tools, rendering) folds into one **"Worked through N steps"** line you can expand.
 - **Stop** ends the current job, including any render it started.
+- **Asking to export** (*"export it"*, *"export the final video"*, *"export the preview"*, *"render a phone copy"*) doesn't go to the AI editor. It opens **Export** and starts that export, so you see its progress bar there; *preview* or *phone* means the 720p copy, anything else the final output. Nothing starts when that export is already running, is up to date with the edit (the box says so), or there's no edit yet. A question about exporting (*"why did the export fail?"*), or a message that also asks for changes (*"move the card, then export"*), still goes to the AI editor.
 - **New conversation** (icon in the panel header) clears the chat; every project file stays.
 - **Close** with ✕ or **Esc**.
 

@@ -81,7 +81,9 @@ export async function audioTrack(src: Blob): Promise<AudioTrack> {
     // Sample description: the codec and its settings.
     const stsd = kid(mv, stbl, 'stsd')!;
     const entry = readHeader(mv, body(stsd) + 8, stsd.start + stsd.size);
-    if (!entry || entry.type !== 'mp4a') throw new Error(`This video's sound (${entry?.type ?? 'unknown'}) cannot be read in pieces yet.`);
+    // QuickTime names MP3 sound ".mp3" (or "ms\0U"); there each sample is one MP3 frame, like MP3 in an MP4.
+    const qtMp3 = !!entry && ['.mp3', 'mp3 ', 'ms\u0000U'].includes(entry.type);
+    if (!entry || (entry.type !== 'mp4a' && !qtMp3)) throw new Error(`This video's sound (${entry?.type ?? 'unknown'}) cannot be read in pieces yet.`);
     const entryChannels = mv.getUint16(body(entry) + 16);
     const entryRate = mv.getUint32(body(entry) + 24) >>> 16;
     // The esds box sits inside the entry, or inside a QuickTime "wave" box within it: look for it by name.
@@ -90,7 +92,8 @@ export async function audioTrack(src: Blob): Promise<AudioTrack> {
       if (mv.getUint32(p + 4) === 0x65736473 /* 'esds' */) { es = esds(mv, p + 8, p + mv.getUint32(p)); break; }
     }
     let codec: string, sampleRate = entryRate, channels = entryChannels;
-    if (es.cfg && [0x40, 0x66, 0x67, 0x68].includes(es.oti)) {
+    if (qtMp3) codec = 'mp3';
+    else if (es.cfg && [0x40, 0x66, 0x67, 0x68].includes(es.oti)) {
       const a = parseAsc(es.cfg);
       codec = `mp4a.40.${a.aot}`;
       sampleRate = a.rate || entryRate;

@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Check, Crop, Download, Maximize2, Pause, Volume2, VolumeX, Eye, EyeOff, Film, FolderOpen, Play, Save, Scissors, ScanSearch, SlidersHorizontal, Undo2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ArrowLeft, Check, Crop, Download, Maximize2, Pause, Volume2, VolumeX, Eye, EyeOff, Film, Play, Scissors, ScanSearch, SlidersHorizontal, Undo2, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { putProject, saveVideo, type Rec } from '@/lib/studio/silence-projects';
 import { flattenMp4 } from '@/lib/studio/mp4-flatten';
 import { streamLevels } from '@/lib/studio/audio-levels';
@@ -18,7 +18,7 @@ import { KIND_LABEL, localFlags, mergeFlags, reviewFlags, snapFlags, type Flag, 
 
 // Files read whole (not MP4 or MOV) must stay under this, or the browser runs out of memory.
 const WHOLE_FILE_LIMIT = 400 * 1048576;
-import { clock, cutSpans, editedTime, findSilences, hopTarget, keepSpans, levels, parseProject, segments, type Override, type Project, type Span } from '@/lib/studio/silence';
+import { clock, cutSpans, editedTime, findSilences, hopTarget, keepSpans, levels, segments, type Override, type Project, type Span } from '@/lib/studio/silence';
 import { btn, btnGhost, card, ErrorNote, Popover, Spinner } from '../ui';
 
 // MP4 (H.264 and AAC) when this browser can record it, otherwise WebM.
@@ -84,6 +84,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   const [minSilence, setMinSilence] = useState(rec.minSilence);
   const [buffer, setBuffer] = useState(rec.buffer);
   const [edited, setEdited] = useState(true);
+  const [joined, setJoined] = useState(false); // timeline shows only the kept parts, joined into one waveform
   const [zoom, setZoom] = useState(1);
   const [edits, setEdits] = useState<Edits>({ splits: rec.splits, overrides: rec.overrides });
   const meta = useRef({ hasVideo: rec.hasVideo });
@@ -115,7 +116,16 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   const video = useRef<HTMLVideoElement | null>(null);
   const vidA = useRef<HTMLVideoElement | null>(null);
   const vidB = useRef<HTMLVideoElement | null>(null);
-  const [front, setFront] = useState<0 | 1>(0); // which one is showing
+  // Which one is showing. A ref, switched straight on the page: a re-render of this whole editor (hundreds
+  // of parts on the timeline) took longer than a frame, and the old player sat frozen on screen meanwhile.
+  const frontRef = useRef<0 | 1>(0);
+  const HIDE = ['opacity-0', 'pointer-events-none'];
+  const setFront = (i: 0 | 1) => {
+    frontRef.current = i;
+    const [show, hide] = i === 0 ? [vidA.current, vidB.current] : [vidB.current, vidA.current];
+    show?.classList.remove(...HIDE);
+    hide?.classList.add(...HIDE);
+  };
   const [rate, setRate] = useState(1); // playback speed
   const canvas = useRef<HTMLCanvasElement>(null);
   const head = useRef<HTMLDivElement>(null);
@@ -178,21 +188,6 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     start(f);
   }
 
-  async function openProject(f: File | undefined) {
-    if (!f) return;
-    const p = parseProject(await f.text());
-    if (!p) return setError('That is not a Silence remover project file.');
-    setError('');
-    if (file && file.name === p.video.name && file.size === p.video.size) {
-      applyProject(p);
-      setNotice('');
-      start(file);
-    } else {
-      pending.current = p;
-      setNotice(`Project opened. Now choose its video: ${p.video.name}`);
-    }
-  }
-
   function save(name: string, blob: Blob) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -205,13 +200,6 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   function deliver(name: string, blob: Blob, kind: SilenceFileKind) {
     save(name, blob);
     onFile?.(name, blob, kind);
-  }
-
-  function saveProject() {
-    if (!file) return;
-    const p: Project = { v: 1, video: { name: file.name, size: file.size }, threshold, minSilence, buffer, splits: edits.splits, overrides: edits.overrides };
-    deliver(`${base()}.silence.json`, new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }), 'project');
-    setNotice('Project saved. Open it later with "Open project", then choose the same video.');
   }
 
   // Export plays the edited version once and records it, so it takes as long as the edited video.
@@ -363,6 +351,31 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   const maxZoom = zoomLimit(total, viewW);
   const innerW = Math.round(viewW * zoom);
   const perSec = total ? innerW / total : 0;
+  // Joined timeline: x follows the edited time (kept parts back to back) instead of the video time.
+  const jmap = useMemo(() => {
+    const acc: number[] = [];
+    let n = 0;
+    for (const k of keeps) { acc.push(n); n += k.end - k.start; }
+    return { acc, len: n };
+  }, [keeps]);
+  const joinedOn = joined && !!vol && jmap.len > 0;
+  const scale = joinedOn ? innerW / jmap.len : perSec; // page pixels per second on the timeline
+  // Video (part) time -> timeline seconds, and back.
+  const ed = (t: number) => {
+    if (!joinedOn) return t;
+    let lo = 0, hi = keeps.length - 1, k = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (keeps[m].start <= t) { k = m; lo = m + 1; } else hi = m - 1; }
+    if (k < 0) return 0;
+    return jmap.acc[k] + Math.min(t, keeps[k].end) - keeps[k].start;
+  };
+  const unEd = (e: number) => {
+    if (!joinedOn) return e;
+    let lo = 0, hi = keeps.length - 1, k = 0;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (jmap.acc[m] <= e) { k = m; lo = m + 1; } else hi = m - 1; }
+    return Math.min(keeps[k].end, keeps[k].start + (e - jmap.acc[k]));
+  };
+  const xOf = (t: number) => ed(t) * scale;
+  const tlLen = joinedOn ? jmap.len : total;
 
   function change(next: Edits) {
     setHistory((h) => [...h.slice(-49), edits]);
@@ -429,6 +442,12 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   }
   const shown = flags.filter((f) => !f.ignored);
   const open = shown.filter((f) => !isCut(f));
+  const gone = shown.filter((f) => isCut(f)); // unwanted parts that are removed: drawn red on the timeline
+  // Where a silence and an unwanted part cover the same time: drawn striped, so the overlap is easy to see.
+  const overlaps = useMemo(() => silences.flatMap((si) => shown.flatMap((f) => {
+    const a = Math.max(si.start, f.start), b = Math.min(si.end, f.end);
+    return b - a > 0.02 ? [{ start: a, end: b, f }] : [];
+  })), [silences, shown]);
 
   function cutHere() {
     const t = (video.current?.currentTime ?? off) - off;
@@ -455,9 +474,11 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     const g = c.getContext('2d')!;
     g.fillStyle = '#F37335';
     const per = vol.length / innerW; // readings per page pixel
+    const sec = 1 / scale / 0.02; // readings per page pixel on a joined timeline
     for (let x = 0; x < W; x++) {
-      const from = Math.floor((x0 + x / dpr) * per);
-      const to = Math.max(Math.floor((x0 + (x + 1) / dpr) * per), from + 1);
+      // Joined: each pixel is a stretch of edited time, read from where it starts in the video.
+      const from = joinedOn ? Math.floor(unEd((x0 + x / dpr) / scale) / 0.02) : Math.floor((x0 + x / dpr) * per);
+      const to = joinedOn ? Math.max(Math.floor(from + sec / dpr), from + 1) : Math.max(Math.floor((x0 + (x + 1) / dpr) * per), from + 1);
       let m = 0;
       for (let i = from; i < to && i < vol.length; i++) if (vol[i] > m) m = vol[i];
       const bar = (m / 100) * H;
@@ -466,7 +487,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   };
   const drawRef = useRef(draw);
   drawRef.current = draw;
-  useEffect(() => { draw(); }, [vol, innerW, viewW]);
+  useEffect(() => { draw(); }, [vol, innerW, viewW, joinedOn, keeps]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
@@ -476,6 +497,8 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     return () => el.removeEventListener('scroll', on);
   }, []);
 
+  // A cut where the spare player was a moment late: which one to show once it reaches the next part.
+  const hold = useRef<{ el: HTMLVideoElement; at: number; muted: boolean; from: HTMLVideoElement } | null>(null);
   // While the video plays: move the playhead, show the edited time, and jump over hidden parts.
   useEffect(() => {
     let raf = 0;
@@ -487,7 +510,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
           else if (!v.paused && v.currentTime >= off + total) { v.pause(); v.currentTime = off + total; }
         }
         const t = v.currentTime - off;
-        if (head.current) head.current.style.left = `${t * perSec}px`;
+        if (head.current) head.current.style.left = `${xOf(t)}px`;
         if (clockText.current) clockText.current.textContent = `${clock(editedTime(t, cuts))} / ${clock(total - removed)}`;
         // Our controls: the edited length once checked (that is what ends up on the timeline), else the part.
         const showEdited = edited && !!vol;
@@ -496,29 +519,54 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
         if (ctlTime.current) ctlTime.current.textContent = `${clock(Math.max(0, Math.min(len, now)))} / ${clock(len)}`;
         if (ctlBar.current && document.activeElement !== ctlBar.current) { ctlBar.current.max = String(len); ctlBar.current.value = String(Math.max(0, Math.min(len, now))); }
         const el = scroller.current;
-        if (el && !v.paused && (t * perSec < el.scrollLeft || t * perSec > el.scrollLeft + el.clientWidth)) el.scrollLeft = t * perSec - 40;
+        if (el && !v.paused && (xOf(t) < el.scrollLeft || xOf(t) > el.scrollLeft + el.clientWidth)) el.scrollLeft = xOf(t) - 40;
         if (stopAt.current != null && !v.paused && v.currentTime >= stopAt.current) { v.pause(); stopAt.current = null; }
+        // Gapless cuts. The spare (hidden, muted) waits a little before the next kept part and starts
+        // playing just before this part ends, timed to reach the next part as this one finishes. The
+        // cut is then only a swap of which player shows: no seek and no start-up wait on screen.
+        const spare = v === vidA.current ? vidB.current : vidA.current;
+        const swapTo = (el: HTMLVideoElement, muted: boolean, from: HTMLVideoElement) => {
+          el.muted = muted;
+          el.volume = from.volume;
+          delete el.dataset.target;
+          delete el.dataset.rolling;
+          video.current = el;
+          if (!from.paused) from.pause();
+          setFront(el === vidA.current ? 0 : 1);
+        };
+        const h = hold.current;
+        if (h) {
+          // The spare was a little late: the last frame stays up until it reaches the next part.
+          if (h.el.paused || !edited) { hold.current = null; swapTo(h.el, h.muted, h.from); }
+          else if (h.el.currentTime - off >= h.at - 0.03) { hold.current = null; swapTo(h.el, h.muted, h.from); }
+          raf = requestAnimationFrame(tick);
+          return;
+        }
+        // Paused (or not previewing the edit): stop a spare that was already rolling.
+        if ((v.paused || !edited) && spare?.dataset.rolling) { spare.pause(); delete spare.dataset.rolling; delete spare.dataset.target; }
         if (edited && !v.paused && !dlgOpen.current) {
-          // Gapless: the spare waits at the next kept part; at the end of this one, swap to it.
-          const spare = v === vidA.current ? vidB.current : vidA.current;
           const k = keeps.findIndex((x) => t >= x.start - 0.05 && t < x.end);
           const next = k >= 0 ? keeps[k + 1] : undefined;
           if (spare && next) {
+            const lead = 0.25 * v.playbackRate; // seconds of video the spare needs to get going
             if (spare.dataset.target !== String(next.start)) {
               if (!spare.paused) spare.pause();
-              spare.currentTime = next.start + off;
+              spare.muted = true;
+              delete spare.dataset.rolling;
+              spare.currentTime = Math.max(0, next.start - lead) + off;
               spare.dataset.target = String(next.start);
             }
             const ready = spare.readyState >= 2 && !spare.seeking;
-            if (t >= keeps[k].end - 0.035 && ready) {
-              spare.muted = v.muted;
-              spare.volume = v.volume;
+            const left = keeps[k].end - t;
+            if (ready && !spare.dataset.rolling && left <= lead) {
               spare.playbackRate = v.playbackRate;
+              spare.dataset.rolling = '1';
               void spare.play().catch(() => {});
-              v.pause();
-              delete spare.dataset.target;
-              video.current = spare;
-              setFront(spare === vidA.current ? 0 : 1);
+            }
+            if (left <= 0.02 && spare.dataset.rolling && !spare.paused) {
+              const muted = v.muted;
+              if (spare.currentTime - off >= next.start - 0.03) swapTo(spare, muted, v);
+              else { hold.current = { el: spare, at: next.start, muted, from: v }; video.current = spare; v.pause(); }
               raf = requestAnimationFrame(tick);
               return;
             }
@@ -530,7 +578,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [cuts, edited, total, removed, perSec, keeps]);
+  }, [cuts, edited, total, removed, perSec, keeps, joinedOn, scale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- the player's own controls (the browser's would show the whole file's length) ----
   const ctlTime = useRef<HTMLSpanElement>(null);
@@ -599,7 +647,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
   }
 
   function seek(e: React.MouseEvent<HTMLDivElement>) {
-    const t = Math.max(0, Math.min(total, (e.clientX - e.currentTarget.getBoundingClientRect().left) / perSec));
+    const t = Math.max(0, Math.min(total, unEd((e.clientX - e.currentTarget.getBoundingClientRect().left) / scale)));
     setSelected(t);
     if (video.current) video.current.currentTime = t + off;
   }
@@ -691,8 +739,8 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
     deliver(`${(file?.name ?? 'video').replace(/\.[^.]+$/, '')}-cut-list.txt`, new Blob([text], { type: 'text/plain' }), 'cut-list');
   }
 
-  const step = STEPS.find((s) => s * perSec >= 70) ?? STEPS[STEPS.length - 1];
-  const ticks = total && Number.isFinite(total) ? Array.from({ length: Math.floor(total / step) + 1 }, (_, i) => i * step) : [];
+  const step = STEPS.find((s) => s * scale >= 70) ?? STEPS[STEPS.length - 1];
+  const ticks = tlLen && Number.isFinite(tlLen) ? Array.from({ length: Math.floor(tlLen / step) + 1 }, (_, i) => i * step) : [];
   const tool = (_disabled: boolean) => `${btnGhost} !min-h-[38px] !px-3`; // one size for every button, as in the header
 
   return (
@@ -711,13 +759,9 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
         <button onClick={() => start()} disabled={!file || busy} className={`${btn} !py-2 !min-h-[38px] !px-3`}>
           {busy ? <Spinner /> : <Scissors size={14} aria-hidden />} {busy ? `Listening… ${listened}%` : vol ? 'Restart' : 'Start'}
         </button>
-        <label className={`${btnGhost} !min-h-[38px] !px-3 cursor-pointer`}>
-          <FolderOpen size={14} aria-hidden /> Open project
-          <input type="file" accept=".json,application/json" className="sr-only" onChange={(e) => { openProject(e.target.files?.[0]); e.target.value = ''; }} />
-        </label>
         {/* The three silence settings, in a pop-up: it stays open while you drag, so the timeline updates as you watch. */}
         {!onlyUnwanted && <Popover
-          align="right"
+          align="left"
           trigger={({ open: isOpen, toggle }) => (
             <button onClick={toggle} aria-haspopup="dialog" aria-expanded={isOpen} className={`${btnGhost} !min-h-[38px] !px-3`}><SlidersHorizontal size={14} aria-hidden /> Settings</button>
           )}
@@ -735,16 +779,12 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
             </div>
           )}
         </Popover>}
-        <button onClick={saveProject} disabled={!file} className={`${btnGhost} !min-h-[38px] !px-3`}><Save size={14} aria-hidden /> Save project</button>
         {onApply && (
           <button onClick={applyToTimeline} disabled={!vol || applying} title="Remove these parts from the editor's timeline (you can undo it there)"
-            className={`${btn} !py-2 !min-h-[38px] !px-3`}>
+            className={`${btn} !py-2 !min-h-[38px] !px-3 ml-auto`}>
             {applying ? <Spinner /> : <Check size={14} aria-hidden />} {applying ? 'Applying…' : 'Apply to timeline'}
           </button>
         )}
-        <button onClick={openExport} disabled={!vol || exp !== null} className={`${btn} !py-2 !min-h-[38px] !px-3 !bg-st-ink hover:!bg-black`}>
-          {exp === null ? <Film size={14} aria-hidden /> : <Spinner />} {exp === null ? 'Export' : `Exporting ${exp.pct}%`}
-        </button>
       </>, actions)}
       {notice && <p role="status" className="text-sm text-st-mute text-right">{notice}</p>}
 
@@ -756,7 +796,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
               {/* Player A sets the frame's size; player B sits exactly on top. Only the front one is visible. */}
               {([0, 1] as const).map((i) => (
                 <video key={i} src={url} onClick={togglePlay} preload="auto"
-                  ref={(el) => { (i === 0 ? vidA : vidB).current = el; if (i === front || !video.current) video.current = el ?? video.current; }}
+                  ref={(el) => { (i === 0 ? vidA : vidB).current = el; if (i === frontRef.current || !video.current) video.current = el ?? video.current; }}
                   onPlay={(e) => { if (e.currentTarget === video.current) setPlaying(true); }}
                   onPause={(e) => { if (e.currentTarget === video.current) setPlaying(false); }}
                   onVolumeChange={(e) => { if (e.currentTarget === video.current) setMuted(e.currentTarget.muted); }}
@@ -766,7 +806,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
                     if (i === 0) setDuration(Number.isFinite(el.duration) ? el.duration : 0);
                     if (off && el === video.current) el.currentTime = off;
                   }}
-                  className={`${i === 0 ? 'block max-h-[55vh] w-auto max-w-full' : 'absolute inset-0 h-full w-full object-contain'} bg-black cursor-pointer ${i === front ? '' : 'opacity-0 pointer-events-none'}`} />
+                  className={`${i === 0 ? 'block max-h-[55vh] w-auto max-w-full' : 'absolute inset-0 h-full w-full object-contain'} bg-black cursor-pointer ${i === frontRef.current ? '' : 'opacity-0 pointer-events-none'}`} />
               ))}
               {/* Own controls: time and scrub bar cover only this part (or the edited length), never the whole file. */}
               <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-xs">
@@ -792,6 +832,9 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
               <span>Edited video: <b><span ref={clockText} className="tabular-nums" /></b></span>
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={edited} onChange={(e) => setEdited(e.target.checked)} className="accent-[#F37335]" /> Preview the edited version
+              </label>
+              <label className="flex items-center gap-2" title="Show only what is kept on the timeline, joined into one waveform. Nothing changes in the edit.">
+                <input type="checkbox" checked={joined} onChange={(e) => setJoined(e.target.checked)} className="accent-[#F37335]" /> Hide removed parts
               </label>
             </div>
           )}
@@ -892,20 +935,20 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
           {vol ? (
             <div ref={lane} className={`relative h-36 select-none ${drag ? 'cursor-ew-resize' : 'cursor-pointer'}`} style={{ width: innerW }} onClick={seek}>
               <div className="absolute inset-x-0 top-0 h-5 border-b border-st-line text-[10px] text-st-mute pointer-events-none">
-                {ticks.map((t) => <span key={t} className="absolute top-1 pl-1 border-l border-st-line" style={{ left: t * perSec }}>{clock(t)}</span>)}
+                {ticks.map((t) => <span key={t} className="absolute top-1 pl-1 border-l border-st-line" style={{ left: t * scale }}>{clock(t)}</span>)}
               </div>
               <canvas ref={canvas} className="absolute left-0 top-5 h-[calc(100%-1.25rem)] pointer-events-none" />
-              {segs.map((s) => {
-                const wide = (s.end - s.start) * perSec >= 26;
+              {segs.filter((s) => !joinedOn || !s.hidden).map((s) => {
+                const wide = (s.end - s.start) * scale >= 26;
                 return (
-                  <div key={s.start} className={`absolute top-5 bottom-0 pointer-events-none border-l border-white/60 ${s.hidden ? 'bg-st-ink/60' : ''} ${current?.start === s.start ? 'ring-2 ring-inset ring-18-orange bg-18-orange/10' : ''}`} style={{ left: s.start * perSec, width: (s.end - s.start) * perSec }}>
+                  <div key={s.start} className={`absolute top-5 bottom-0 pointer-events-none border-l border-white/60 ${s.hidden ? 'bg-neutral-500/60' : ''} ${current?.start === s.start ? 'ring-2 ring-inset ring-18-orange bg-18-orange/10' : ''}`} style={{ left: xOf(s.start), width: (s.end - s.start) * scale }}>
                     {wide && (
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setSelected(s.start + 1e-6); change({ ...edits, overrides: [...edits.overrides, { start: s.start, end: s.end, hide: !s.hidden }] }); }}
                         aria-label={s.hidden ? `Keep ${clock(s.start)} to ${clock(s.end)}` : `Remove ${clock(s.start)} to ${clock(s.end)}`}
                         title={s.hidden ? 'Removed: click to keep' : 'Kept: click to remove'}
-                        className="pointer-events-auto absolute left-1/2 top-1.5 -translate-x-1/2 grid h-6 w-6 place-items-center rounded-full bg-white/95 text-st-ink shadow hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange"
+                        className="pointer-events-auto absolute z-[6] left-1/2 top-1.5 -translate-x-1/2 grid h-6 w-6 place-items-center rounded-full bg-white/95 text-st-ink shadow hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-18-orange"
                       >
                         {s.hidden ? <EyeOff size={13} aria-hidden /> : <Eye size={13} aria-hidden />}
                       </button>
@@ -913,6 +956,25 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
                   </div>
                 );
               })}
+              {!joinedOn && gone.map((f) => (
+                <div
+                  key={`gone-${f.start}-${f.end}`}
+                  className="absolute top-5 bottom-0 overflow-hidden bg-red-600/55 pointer-events-none text-[10px] font-semibold leading-tight text-white"
+                  style={{ left: f.start * perSec, width: Math.max(3, (f.end - f.start) * perSec) }}
+                >
+                  {(f.end - f.start) * perSec > 44 && <span className="block truncate px-1 pt-8">{KIND_LABEL[f.kind]}</span>}
+                </div>
+              ))}
+              {!joinedOn && overlaps.map((o) => (
+                <div
+                  key={`ov-${o.start}-${o.end}`}
+                  title={`Silence and ${KIND_LABEL[o.f.kind].toLowerCase()} overlap: ${clock(o.start)} to ${clock(o.end)}`}
+                  className="absolute top-5 bottom-0 pointer-events-none border-y-[3px] border-amber-400"
+                  style={{ left: o.start * perSec, width: Math.max(3, (o.end - o.start) * perSec), background: 'repeating-linear-gradient(135deg, rgba(220,38,38,.75) 0 6px, rgba(115,115,115,.75) 6px 12px)' }}
+                >
+                  {(o.end - o.start) * perSec > 52 && <span className="absolute bottom-1 left-1 rounded bg-amber-400 px-1 text-[10px] font-semibold text-st-ink">Overlap</span>}
+                </div>
+              ))}
               {open.map((f) => (
                 <button
                   key={`${f.start}-${f.end}`}
@@ -921,12 +983,12 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
                   title={`${KIND_LABEL[f.kind]}${f.text ? `: "${f.text}"` : ''}. ${f.why}. Click to hear it.`}
                   aria-label={`${KIND_LABEL[f.kind]} at ${clock(f.start)}. Play it.`}
                   className="absolute top-5 bottom-0 overflow-hidden border-x-2 border-red-600 bg-red-500/35 text-left text-[10px] font-semibold leading-tight text-red-900 hover:bg-red-500/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600"
-                  style={{ left: f.start * perSec, width: Math.max(3, (f.end - f.start) * perSec) }}
+                  style={{ left: xOf(f.start), width: Math.max(3, xOf(f.end) - xOf(f.start)) }}
                 >
-                  {(f.end - f.start) * perSec > 44 && <span className="block truncate px-1 pt-1">{KIND_LABEL[f.kind]}</span>}
+                  {xOf(f.end) - xOf(f.start) > 44 && <span className="block truncate px-1 pt-1">{KIND_LABEL[f.kind]}</span>}
                 </button>
               ))}
-              {drag && (() => {
+              {!joinedOn && drag && (() => {
                 const was = drag.cut[drag.edge];
                 const a = Math.min(was, drag.t), b = Math.max(was, drag.t);
                 const grow = drag.edge === 'end' ? drag.t > was : drag.t < was;
@@ -941,7 +1003,7 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
                   </>
                 );
               })()}
-              {cuts.flatMap((c) => (['start', 'end'] as const).map((edge) => (
+              {!joinedOn && cuts.flatMap((c) => (['start', 'end'] as const).map((edge) => (
                 <div
                   key={`${edge}-${c.start}-${c.end}`}
                   role="separator"
@@ -966,13 +1028,21 @@ export function Editor({ actions, rec, blob, onBack, backLabel, onChangePart, on
                   <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-5 w-2 rounded-sm border border-st-line bg-white shadow-sm opacity-0 group-hover:opacity-100" />
                 </div>
               )))}
+              {/* Joined: a thin line where a removed part was taken out. */}
+              {joinedOn && jmap.acc.slice(1).map((a) => <div key={'j' + a} className="absolute top-5 bottom-0 w-px bg-st-mute/50 pointer-events-none" style={{ left: a * scale }} />)}
               <div ref={head} className="absolute top-0 bottom-0 w-0.5 bg-sky-600 pointer-events-none" style={{ left: 0 }} />
             </div>
           ) : (
             <div className="grid h-36 place-items-center text-sm text-st-mute">The waveform appears here</div>
           )}
         </div>
-        <p className="text-xs text-st-mute mt-2">Dark parts are removed from the preview. Click the waveform to select a part and jump there, then press Remove or Keep. Cut splits a part at the blue line. Drag either end of a dark part to make it longer or shorter. Red boxes are unwanted parts found for you: click one to hear it. Shortcuts: Space plays or pauses, the left and right arrows jump to the previous or next kept clip, and Alt + scroll zooms the timeline. Your video stays on your computer.</p>
+        <p className="text-xs text-st-mute mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="inline-flex items-center gap-1"><i className="inline-block h-3 w-3 rounded-sm bg-neutral-500/60" /> Silence (removed)</span>
+          <span className="inline-flex items-center gap-1"><i className="inline-block h-3 w-3 rounded-sm bg-red-600/55" /> Unwanted part (removed)</span>
+          <span className="inline-flex items-center gap-1"><i className="inline-block h-3 w-3 rounded-sm border-2 border-red-600 bg-red-500/35" /> Unwanted part found, not removed yet</span>
+          <span className="inline-flex items-center gap-1"><i className="inline-block h-3 w-3 rounded-sm" style={{ background: 'repeating-linear-gradient(135deg, rgba(220,38,38,.75) 0 3px, rgba(115,115,115,.75) 3px 6px)' }} /> Silence and unwanted part overlap</span>
+        </p>
+        <p className="text-xs text-st-mute mt-1">Gray and red parts are removed from the preview. Click the waveform to select a part and jump there, then press Remove or Keep. Cut splits a part at the blue line. Drag either end of a removed part to make it longer or shorter. Click an unwanted part (red) to hear it. Shortcuts: Space plays or pauses, the left and right arrows jump to the previous or next kept clip, and Alt + scroll zooms the timeline. Your video stays on your computer.</p>
       </section>
 
       {dlg !== 'closed' && (

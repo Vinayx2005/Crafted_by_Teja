@@ -421,6 +421,10 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const [muted, setMuted] = useState(false);
   const [silenceOpen, setSilenceOpen] = useState<false | 'silence' | 'unwanted'>(false);
+  // Closing the popup only hides it: work in progress (reading the sound, listening to the words) goes
+  // on, and opening it again shows it as it was (playhead, zoom, selection). One per mode, kept while it
+  // still points at the same video and part; otherwise a fresh one opens (and loads the saved session).
+  const [silenceKept, setSilenceKept] = useState<{ mode: 'silence' | 'unwanted'; sig: string }[]>([]);
   const [firstDraft, setFirstDraft] = useState<FirstDraft | null>(null);
   const [briefOpen, setBriefOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
@@ -643,6 +647,12 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
   // The timeline is exactly what the last "Apply to timeline" of that tool made: reopen that session, with its work.
   // Remove pauses & fillers and Find unwanted parts each remember their own.
   const timelineSource = useMemo<SilenceSource | null>(() => (timeline?.silence?.path ? { ...timeline.silence, from: 'timeline', build: false, applied: true } : freshSource), [timeline, freshSource]);
+  const sourceSig = (x: SilenceSource | null) => (x ? `${x.path}|${x.range?.start ?? ''}|${x.range?.end ?? ''}|${x.build ? 'build' : ''}` : '');
+  const openSilence = (mode: 'silence' | 'unwanted') => {
+    const sig = sourceSig(mode === 'unwanted' ? unwantedSource : timelineSource);
+    setSilenceKept((k) => (k.some((x) => x.mode === mode && x.sig === sig) ? k : [...k.filter((x) => x.mode !== mode), { mode, sig }]));
+    setSilenceOpen(mode);
+  };
   const unwantedSource = useMemo<SilenceSource | null>(() => (timeline?.unwanted?.path ? { ...timeline.unwanted, from: 'timeline', build: false, applied: true } : freshSource), [timeline, freshSource]);
 
   // The player panel is exactly as wide as its frame (1920×1080 scaled to the row height),
@@ -672,9 +682,13 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
   async function say(text: string) {
     setError('');
     setChatOpen(true);
+    // "export it", "export the preview"…: export is not the AI's job, so open Export (and start it) here.
+    const ex = exportAsk(text);
+    if (ex) { setExportAsk({ mode: ex, n: Date.now() }); return; }
     try { await bridge.call('/api/p/message?id=' + encodeURIComponent(id), { text }); setRunning(true); onChanged(); }
     catch (e) { setError((e as Error).message); }
   }
+  const [exportReq, setExportAsk] = useState<{ mode: 'final' | 'preview'; n: number } | null>(null);
   const stop = () => bridge.call(`/api/p/stop?id=${encodeURIComponent(id)}`, {}).catch(() => {});
 
   // When the editor finishes a round, move the 1st draft on: new storyboard sheets -> open the
@@ -728,7 +742,7 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="flex-1 min-w-0 text-xl font-semibold tracking-tight truncate" title={project.dir}>{project.name}</h1>
         <SaveStatus save={save} />
-        <ExportButton id={id} bridge={bridge} onDone={refresh}
+        <ExportButton id={id} bridge={bridge} onDone={refresh} ask={exportReq}
           onPlay={(p) => setView({ kind: 'video', path: p, name: p.split('/').pop() || p, play: true })} />
       </div>
       <ErrorNote text={error} />
@@ -747,7 +761,7 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
         <div className="hidden lg:block lg:row-span-3 lg:col-start-3 lg:row-start-1"><Meter video={video} muted={muted} onMute={() => setMuted((m) => !m)} /></div>
         <AiBar running={running} busyElsewhere={d.busyElsewhere} draft={firstDraft} chatOpen={chatOpen} unread={!chatOpen && events.length > 0 && events[events.length - 1].kind === 'assistant'}
           captionChanges={d.captionReview ? parseCaptionReview(d.captionReview.text).reduce((n, x) => n + x.rows.length, 0) : null}
-          onFeature={(f) => (f.key === 'cut' ? setSilenceOpen('silence') : f.key === 'unwanted' ? setSilenceOpen('unwanted') : f.key === 'captions' && d.captionReview ? setCaptionsOpen(true) : say(f.text(id)))} onDraft={() => setBriefOpen(true)} onStoryboard={() => setBoardOpen(true)}
+          onFeature={(f) => (f.key === 'cut' ? openSilence('silence') : f.key === 'unwanted' ? openSilence('unwanted') : f.key === 'captions' && d.captionReview ? setCaptionsOpen(true) : say(f.text(id)))} onDraft={() => setBriefOpen(true)} onStoryboard={() => setBoardOpen(true)}
           onChanges={() => setChangesOpen(true)} onChat={() => setChatOpen((o) => !o)} onStop={stop} />
         <Timeline data={timeline?.data ?? null} file={timeline?.file ?? null} srcPrefix={`projects/${id}/`} video={video} player={video}
           viewPath={view?.kind === 'video' ? view.path : null} programPath={program?.path ?? null} programName={program?.name ?? null}
@@ -791,9 +805,9 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
       {changesOpen && <ChangesDialog stage={firstDraft?.stage} at={video && view?.kind === 'video' ? video.currentTime : null} atName={view?.name ?? ''}
         onClose={() => setChangesOpen(false)} onSend={sendChanges} />}
 
-      {silenceOpen && <SilencePopup key={silenceOpen} mode={silenceOpen} d={d} bridge={bridge} source={silenceOpen === 'unwanted' ? unwantedSource : timelineSource} magnetic={magnetic} onClose={() => setSilenceOpen(false)} onSaved={refresh}
+      {silenceKept.map(({ mode: m, sig }) => <SilencePopup key={`${m}:${sig}`} mode={m} visible={silenceOpen === m} d={d} bridge={bridge} source={m === 'unwanted' ? unwantedSource : timelineSource} magnetic={magnetic} onClose={() => setSilenceOpen(false)} onSaved={refresh}
         onApplied={(text) => { setSilenceOpen(false); setTlNote({ text, undo: true }); setSave({ state: 'saved', at: Date.now() }); refresh(); }} onSaving={saving}
-        onUse={(text) => { setSilenceOpen(false); say(text); }} onOpenFile={(f) => setView({ kind: 'video', path: f, name: f.split('/').pop() ?? f, play: true })} />}
+        onUse={(text) => { setSilenceOpen(false); say(text); }} onOpenFile={(f) => setView({ kind: 'video', path: f, name: f.split('/').pop() ?? f, play: true })} />)}
 
       {chatOpen && <Chat events={events} running={running} busyElsewhere={d.busyElsewhere} error={error} onSay={say} bridge={bridge} id={id} draft={draft} onDraftUsed={() => setDraft('')} onClose={() => setChatOpen(false)} onStop={stop} />}
     </div>
@@ -814,8 +828,8 @@ type SilenceSource = {
   build?: boolean; // several cuts: join the timeline's footage into one video first
   applied?: boolean; // the timeline is what this session's last Apply made
 };
-function SilencePopup({ mode, d, bridge, source, magnetic, onClose, onSaved, onApplied, onSaving, onUse, onOpenFile }: {
-  mode: 'silence' | 'unwanted'; d: Detail; bridge: Bridge; source: SilenceSource | null; magnetic: boolean;
+function SilencePopup({ mode, visible, d, bridge, source, magnetic, onClose, onSaved, onApplied, onSaving, onUse, onOpenFile }: {
+  mode: 'silence' | 'unwanted'; visible: boolean; d: Detail; bridge: Bridge; source: SilenceSource | null; magnetic: boolean;
   onClose: () => void; onSaved: () => void; onApplied: (text: string) => void; onSaving: <T>(p: Promise<T>) => Promise<T>; onUse: (text: string) => void; onOpenFile: (path: string) => void;
 }) {
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
@@ -923,20 +937,24 @@ function SilencePopup({ mode, d, bridge, source, magnetic, onClose, onSaved, onA
   }), [d.id, d.raw, d.out, bridge, onSaved, src, onClose, magnetic, onApplied, onSaving, mode]);
 
   useEffect(() => {
+    if (!visible) return;
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('[role="dialog"][aria-modal="true"]')) onClose(); };
     document.addEventListener('keydown', esc);
     return () => document.removeEventListener('keydown', esc);
-  }, [onClose]);
+  }, [onClose, visible]);
+  // Hidden: stop its video, so nothing plays behind the editor.
+  const popRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (!visible) popRoot.current?.querySelectorAll('video').forEach((v) => v.pause()); }, [visible]);
 
   const cut = saved.filter((s) => s.kind === 'video' && s.state === 'saved').pop();
   const list = saved.filter((s) => s.kind === 'cut-list' && s.state === 'saved').pop();
 
   return (
-    <div className="fixed inset-0 z-[66] bg-black/40 p-2 sm:p-4 flex" role="dialog" aria-label={mode === 'unwanted' ? 'Find unwanted parts' : 'Silence remover'}>
+    <div ref={popRoot} className={`fixed inset-0 z-[66] bg-black/40 p-2 sm:p-4 ${visible ? 'flex' : 'hidden'}`} role="dialog" aria-hidden={!visible} aria-label={mode === 'unwanted' ? 'Find unwanted parts' : 'Silence remover'}>
       <div className="mx-auto w-full max-w-[1800px] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden">
         <header className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-st-line shrink-0">
           {mode === 'unwanted' ? <ScanSearch size={17} className="text-18-orange" aria-hidden /> : <Scissors size={17} className="text-18-orange" aria-hidden />}
-          <div className="mr-2 min-w-0">
+          <div className="mr-2 min-w-0 max-w-[45%]" title={src?.path}>
             <h2 className="font-semibold text-sm leading-tight">{mode === 'unwanted' ? 'Find unwanted parts' : <>Remove pauses &amp; fillers</>}</h2>
             <p className="text-[11px] text-st-mute truncate">
               {source?.from === 'timeline'
@@ -947,7 +965,7 @@ function SilencePopup({ mode, d, bridge, source, magnetic, onClose, onSaved, onA
             </p>
           </div>
           {/* The Silence remover puts its own buttons (Projects, Start, Settings, Export…) here. */}
-          <div ref={setSlot} className="flex flex-1 flex-wrap items-center justify-end gap-2" />
+          <div ref={setSlot} className="flex flex-1 flex-wrap items-center justify-start gap-2" />
           <button onClick={onClose} className="p-2 rounded-lg text-st-mute hover:text-st-ink hover:bg-st-surface" aria-label="Close the Silence remover"><X size={18} /></button>
         </header>
 
@@ -1703,7 +1721,15 @@ const EXPORTS = [
   { mode: 'final' as const, title: 'Final output', tag: 'High quality · 1080p', text: 'The full-quality render to publish (crf 14, slow preset, sharpest frames). Takes a while: often 10–30 minutes for a few minutes of video.' },
 ];
 
-function ExportButton({ id, bridge, onDone, onPlay }: { id: string; bridge: Bridge; onDone: () => void; onPlay: (path: string) => void }) {
+// A chat message that only asks to export ("export it", "export the preview", "render the final video").
+// Longer messages, or ones that also ask for changes, still go to the AI editor.
+function exportAsk(text: string): 'final' | 'preview' | null {
+  const t = text.trim().toLowerCase();
+  if (t.length > 80 || !/\b(export|render)\b/.test(t) || /\b(don'?t|do not|not yet|after|before|then|and (change|fix|move|add|remove))\b/.test(t) || /^(why|what|how|when|where|is|did|does)\b|\b(fail|failed|error|wrong|stuck)\b/.test(t)) return null;
+  return /\b(preview|phone|small|720p?|review copy)\b/.test(t) ? 'preview' : 'final';
+}
+
+function ExportButton({ id, bridge, onDone, onPlay, ask }: { id: string; bridge: Bridge; onDone: () => void; onPlay: (path: string) => void; ask?: { mode: 'final' | 'preview'; n: number } | null }) {
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<ExportInfo | null>(null);
   const [error, setError] = useState('');
@@ -1735,6 +1761,25 @@ function ExportButton({ id, bridge, onDone, onPlay }: { id: string; bridge: Brid
     try { setInfo(await bridge.call<ExportInfo>(url, { mode })); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
+  // Asked from the chat: open the dialog, and start that export unless it is already running or up to date.
+  const asked = useRef(0);
+  const [askNote, setAskNote] = useState('');
+  useEffect(() => {
+    if (!ask || ask.n === asked.current) return;
+    asked.current = ask.n;
+    setOpen(true);
+    setAskNote('');
+    void (async () => {
+      let i: ExportInfo;
+      try { i = await bridge.call<ExportInfo>(url); setInfo(i); } catch (e) { return setError(e instanceof Error ? e.message : String(e)); }
+      const have = i[ask.mode];
+      const fresh = !!(have && i.propsModified && have.modified >= i.propsModified);
+      if (fresh && i.job?.state !== 'running') setAskNote(`The ${ask.mode === 'final' ? 'final output' : 'preview'} is already up to date with the edit, so nothing was rendered again. Use Export again to make it anyway.`);
+      if (!i.ready || i.job?.state === 'running' || i.busy || fresh) return;
+      await start(ask.mode);
+    })();
+  }, [ask]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const elapsed = (j: ExportJob) => fmtTime(Math.round(((j.ended ?? Date.now()) - j.started) / 1000)).replace(/\.0$/, '');
   const busyOther = info?.busy && !(info.busy.kind === 'export' && info.busy.id === id) ? info.busy : null;
 
@@ -1749,6 +1794,7 @@ function ExportButton({ id, bridge, onDone, onPlay }: { id: string; bridge: Brid
             {info && !info.ready && <p className="text-sm text-st-mute">Nothing to export yet: the edit (work/edit.json) is built during the 1st draft. Use <b>Create 1st draft</b> first.</p>}
             {busyOther && <p className="text-sm rounded-lg bg-amber-50 text-amber-900 px-3 py-2">{busyOther.kind === 'export' ? `An export of "${busyOther.id}" is running.` : busyOther.id === id ? 'The AI editor is working on this video.' : `The AI editor is busy with "${busyOther.id}".`} One job runs at a time; export once it has finished.</p>}
             <ErrorNote text={error} />
+            {askNote && <p className="text-sm rounded-lg bg-st-surface text-st-ink px-3 py-2">{askNote}</p>}
             {EXPORTS.map((x) => {
               const have = info?.[x.mode] ?? null;
               const stale = !!(have && info?.propsModified && have.modified < info.propsModified);
