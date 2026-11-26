@@ -98,7 +98,7 @@ What happens behind the scenes when a folder becomes a project:
 - **Removing it from the list:** use the bin icon on its card. It deletes only the link `D:\Editing\projects\<folder name>`, which has a shortcut arrow in File Explorer. Your folder and footage stay untouched.
 
 ### Export
-**Export** renders the current edit straight from `work/edit.json` (or `work/promo.json`). It uses the same Remotion composition and asset staging as `tools/render.py`, with no AI turn involved, so it needs no Claude sign-in. Pick one of two outputs:
+**Export** renders the current edit straight from `work/edit.json` (or `work/promo.json`, or `work/testimonial.json`). It uses the same Remotion composition and asset staging as `tools/render.py`, with no AI turn involved, so it needs no Claude sign-in. Pick one of two outputs:
 
 | Output | Quality | File | How it is made |
 |---|---|---|---|
@@ -161,12 +161,13 @@ The bar's buttons hand work to the AI editor. The skill keeps its own approval g
 | **Remove pauses & fillers** | Opens the **Silence remover** in a popup, on the timeline's video (see below) |
 | **Find unwanted parts** | Opens a popup like **Remove pauses & fillers**, on the timeline's video, that works **only on unwanted parts** (fillers, fumbles, repeated takes): no silences are marked and there are no silence settings. It starts listening as soon as it opens, highlights what it finds in red, and nothing is cut until you remove them. **Apply to timeline** puts the result back on the timeline. It keeps its own session and its own Apply record, separate from Remove pauses & fillers, so applying one never undoes the other's cuts |
 | **Auto captions & .srt file** | A real `.srt` in `out/`, then the before/after caption table and the spelling check. Uses the telugu-captions skill (asking for the script first) when the video is in Telugu or Tenglish. Once `work/caption_review.md` exists (the 1st draft makes it), the button becomes **Captions review (N)** and opens the table instead, also while the AI works: #, time, Before (speech-to-text) and After (caption) with the changed words marked red / green, Change (corrected / added / removed) and Note. Filter by change type, search words, ▶ on a time plays that moment on the timeline (final-timeline tables only), download the `.srt`, or **Make captions again** |
-| **Storyboard** 🔒 | Locked until the 1st draft has made its storyboard; then opens the storyboard review |
+| **Storyboard** 🔒 | Locked until a storyboard exists, whether the 1st draft made it or you asked for one in **Ask AI** (its frames in `work/storyboard_frames/`, or a `storyboard` sheet in `out/` or `work/`); then opens the storyboard review |
 | **Request changes** | A box for changes in plain words, like a message to Claude |
 
 ### 1st draft
 1. **Create 1st draft** opens the **brief**:
    - **Intake questions** from the skill (Part 1, Step 0), with the usual answers pre-selected: cleanup, colour grade, captions, format, language, style, audio, B-roll, transitions & SFX.
+   - **Style** also lists every other skill in `C:\Users\vinay\.claude\skills` as "<name> skill" (hover for its description), read fresh from the bridge (`GET /api/skills`) each time the dialog opens. A skill made in Ask AI shows up the next time you open it. Tool skills (long-form-whiteboard-animation, telugu-captions, resolve-handoff, remotion-*) are left out. Picking one tells the editor to load that skill as the style.
    - **Optional details:** target length and the lower third (name, role).
    - **"What do you want in this video?"**, where you write anything else the way you would in chat. You can also paste a script for the captions.
 2. **Up to the storyboard:** the AI editor saves the answers to `work/brief.md` and edits the way it does in chat: analyse, HDR check, raw cut if needed, transcript, graphics plan, `work/edit.json`, then the **storyboard sheets** in `out/`. For the 1st draft the storyboard is the approval step, so it doesn't stop for plan approval, and it doesn't render yet. If it needs something only you can answer, it asks in the AI editor chat and waits.
@@ -229,7 +230,7 @@ The Silence remover opens over the editor, working directly on the video in the 
 - **Timeline colours:** gray = a removed silence, red = a removed unwanted part, red outline = an unwanted part found but not removed yet, red-and-gray stripes = a silence and an unwanted part covering the same time (labelled *Overlap*). The eye buttons sit on top of all of them.
 
 ### Timeline (bottom)
-The timeline is read from the props that drive the Remotion render: `work/edit.json` (or `work/promo.json` for promo videos), so it shows the real edit at its real times.
+The timeline is read from the props that drive the Remotion render: `work/edit.json`, `work/promo.json` (promo videos) or `work/testimonial.json` (testimonial videos, the **Testimonial** composition, 1080 × 1920), so it shows the real edit at its real times. The newest file wins, except that an `edit.json` holding only footage cuts never hides a promo or testimonial layout. For a testimonial: V1 shows the shots (both speakers, speaker A or B), V2 the whiteboard panels and B-roll, CC the captions, A1 the voice and music. The live preview draws it with the Testimonial composition. Timeline changes (cut, delete, drop, colour) are refused there with a message; ask the AI editor.
 
 | Track | What is on it |
 |---|---|
@@ -382,7 +383,7 @@ All routes are under `http://127.0.0.1:4317/api` and need the `X-Editor-Token` h
 | `GET /auth/status` · `POST /auth/login` · `GET /auth/login` · `POST /auth/code` · `POST /auth/cancel` · `POST /auth/logout` | Claude sign-in for the editor |
 | `GET /projects` · `POST /projects` | List or create projects |
 | `GET /p/detail?id=` | Steps, files, brief and plan for one video |
-| `GET /p/timeline?id=` | The render props behind the timeline (`work/edit.json` or `work/promo.json`, whichever is newer) |
+| `GET /p/timeline?id=` | The render props behind the timeline (`work/edit.json`, `work/promo.json` or `work/testimonial.json`) and which composition renders them |
 | `GET /p/chat?id=` · `GET /p/stream?id=` | Chat history, and live updates (server-sent events) |
 | `POST /p/message?id=` · `POST /p/stop?id=` · `POST /p/new-chat?id=` | Send a message, stop the job, start a new conversation |
 | `POST /p/upload?id=&name=` · `POST /p/add-local?id=` | Add raw footage |

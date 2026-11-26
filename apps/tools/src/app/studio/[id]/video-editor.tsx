@@ -369,11 +369,14 @@ const BRIEF_QUESTIONS: { key: string; label: string; options: string[]; note?: s
   { key: 'broll', label: 'B-roll', options: ['None', 'Sparse', 'Heavy'] },
   { key: 'fx', label: 'Transitions & SFX', options: ['Minimal', 'A few more', 'None'] },
 ];
+// Skills that are tools of the edit, not a look: everything else in ~/.claude/skills is offered as a Style.
+const NOT_STYLE = (n: string) => n === 'long-form-whiteboard-animation' || n === 'telugu-captions' || n === 'resolve-handoff' || n.startsWith('remotion-');
 const BRIEF_DEFAULT: Brief = Object.fromEntries(BRIEF_QUESTIONS.map((q) => [q.key, q.options[0]]));
 
 function draftPrompt(id: string, b: Brief, savedBrief: boolean) {
   const lines = BRIEF_QUESTIONS.map((q) => `- ${q.label}: ${b[q.key]}`);
   if (b.length) lines.push(`- Target length: ${b.length}`);
+  if (/ skill$/.test(b.style ?? '')) lines.push(`- Load the ${b.style.replace(/ skill$/, '')} skill (C:/Users/vinay/.claude/skills) and use it as the style, together with the long-form-whiteboard-animation rules.`);
   if (b.lowerThird) lines.push(`- Lower third (name, role): ${b.lowerThird}`);
   return [
     `Create the 1st draft of this video (projects/${id}), editing it the way we do in chat: follow D:\\Editing\\CLAUDE.md and the long-form-whiteboard-animation skill.`,
@@ -399,12 +402,15 @@ const changesPrompt = (stage: FirstDraft['stage'] | undefined, text: string) =>
 // says, and say exactly what was written.
 const SKILL_NOTE = `\n\nAlso save this for future videos: once this video is changed, update the long-form-whiteboard-animation skill (or the skill this change belongs to) so every future video follows it. Write it as a general rule in the right place of the skill, not as this video's times, words or file names, and don't duplicate or contradict a rule that is already there; if it conflicts with one, change that rule instead. Rebuild Skills.docx as CLAUDE.md says. Then tell me, in a short separate part of your reply, the exact rule you added or changed and in which skill file.`;
 
+// A storyboard exists, however it was asked for (the 1st draft button or Ask AI): its single
+// frames, or a storyboard sheet in out/ or work/.
+const hasBoard = (d: Detail) => (d.frames?.length ?? 0) > 0 || [...d.out, ...d.workImages].some((f) => f.kind === 'image' && /storyboard/i.test(f.name));
 // Storyboard sheets: images in out/ (and work/) named like the skill's sheets.
 const isSheet = (f: FileInfo) => f.kind === 'image' && /storyboard|scenes|finished|frames|transition|sheet/i.test(f.name);
 
 function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bridge: Bridge; project: Project; onBack: () => void; onChanged: () => void }) {
   const [d, setD] = useState<Detail | null>(null);
-  const [timeline, setTimeline] = useState<{ file: string | null; modified?: number; data: Record<string, unknown> | null; silence?: SilenceSource | null; unwanted?: SilenceSource | null } | null>(null);
+  const [timeline, setTimeline] = useState<{ file: string | null; composition?: string; modified?: number; data: Record<string, unknown> | null; silence?: SilenceSource | null; unwanted?: SilenceSource | null } | null>(null);
   const [events, setEvents] = useState<Ev[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
@@ -559,7 +565,10 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
   }, [timeline, id]);
   const programFresh = !!program && !!timeline?.modified && program.modified >= timeline.modified - 2000;
   const tlView = view?.kind === 'video' && !!view.timeline;
-  const canLive = timeline?.file === 'work/edit.json' && !!timeline.data && Array.isArray(timeline.data.segments) && Number(timeline.data.durationInFrames) > 0;
+  // The live preview draws the Edit composition (edit.json) and the Testimonial one (testimonial.json).
+  const isTestimonial = timeline?.composition === 'Testimonial' || timeline?.file === 'work/testimonial.json';
+  const canLive = !!timeline?.data && Number(timeline.data.durationInFrames) > 0
+    && ((timeline.file === 'work/edit.json' && Array.isArray(timeline.data.segments)) || (isTestimonial && typeof timeline.data.src === 'string'));
   const liveOn = tlView && canLive && graphics;
   useEffect(() => { if (liveOn) video?.pause(); else live.pause(); }, [liveOn, video, live]);
   useEffect(() => { live.post({ type: 'mute', muted }); }, [live, muted]);
@@ -640,6 +649,12 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
       const cuts = segs.map((x) => { const c = { path: x.rel!, from: x.from, to: x.to, at }; at += x.to - x.from; return c; });
       return { path: '', name: 'the timeline footage', from: 'timeline', build: true, tlStart, cuts };
     }
+    // One continuous source and no cuts (the Testimonial layout): that file is the timeline footage.
+    const one = typeof data?.src === 'string' ? data.src.replace(/\\/g, '/') : '';
+    if (!segs.length && one.startsWith(prefix)) {
+      const p = one.slice(prefix.length);
+      return { path: p, name: p.split('/').pop() ?? p, from: 'timeline', tlStart: 0 };
+    }
     if (view && view.kind === 'video') return { path: view.path, name: view.name, from: 'preview' as const };
     const raw = d?.raw.find((f) => f.kind === 'video');
     return raw ? { path: raw.path, name: raw.name, from: 'footage' as const } : null;
@@ -657,7 +672,7 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
 
   // The player panel is exactly as wide as its frame (1920×1080 scaled to the row height),
   // so there is no empty space beside the video; the media panel takes the rest of the width.
-  const vertical = timeline?.data?.format === '9:16';
+  const vertical = timeline?.data?.format === '9:16' || timeline?.composition === 'Testimonial' || timeline?.file === 'work/testimonial.json';
   const gridRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLElement>(null);
   const [playerW, setPlayerW] = useState<number | null>(null);
@@ -761,7 +776,7 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
         <div className="hidden lg:block lg:row-span-3 lg:col-start-3 lg:row-start-1"><Meter video={video} muted={muted} onMute={() => setMuted((m) => !m)} /></div>
         <AiBar running={running} busyElsewhere={d.busyElsewhere} draft={firstDraft} chatOpen={chatOpen} unread={!chatOpen && events.length > 0 && events[events.length - 1].kind === 'assistant'}
           captionChanges={d.captionReview ? parseCaptionReview(d.captionReview.text).reduce((n, x) => n + x.rows.length, 0) : null}
-          onFeature={(f) => (f.key === 'cut' ? openSilence('silence') : f.key === 'unwanted' ? openSilence('unwanted') : f.key === 'captions' && d.captionReview ? setCaptionsOpen(true) : say(f.text(id)))} onDraft={() => setBriefOpen(true)} onStoryboard={() => setBoardOpen(true)}
+          onFeature={(f) => (f.key === 'cut' ? openSilence('silence') : f.key === 'unwanted' ? openSilence('unwanted') : f.key === 'captions' && d.captionReview ? setCaptionsOpen(true) : say(f.text(id)))} onDraft={() => setBriefOpen(true)} onStoryboard={() => setBoardOpen(true)} hasBoard={hasBoard(d)}
           onChanges={() => setChangesOpen(true)} onChat={() => setChatOpen((o) => !o)} onStop={stop} />
         <Timeline data={timeline?.data ?? null} file={timeline?.file ?? null} srcPrefix={`projects/${id}/`} video={video} player={video}
           viewPath={view?.kind === 'video' ? view.path : null} programPath={program?.path ?? null} programName={program?.name ?? null}
@@ -795,7 +810,7 @@ function Workspace({ id, bridge, project, onBack, onChanged }: { id: string; bri
           }} />
       </div>
 
-      {briefOpen && <BriefDialog name={d.name} savedBrief={!!d.brief} onClose={() => setBriefOpen(false)} onStart={startDraft} />}
+      {briefOpen && <BriefDialog bridge={bridge} name={d.name} savedBrief={!!d.brief} onClose={() => setBriefOpen(false)} onStart={startDraft} />}
       {captionsOpen && d.captionReview && <CaptionsDialog d={d} bridge={bridge} review={d.captionReview} blocked={running || !!d.busyElsewhere}
         onClose={() => setCaptionsOpen(false)}
         onRemake={() => { setCaptionsOpen(false); say(AI_FEATURES.find((f) => f.key === 'captions')!.text(id)); }}
@@ -1848,8 +1863,17 @@ function ExportButton({ id, bridge, onDone, onPlay, ask }: { id: string; bridge:
 
 // Create 1st draft: the intake questions from the skill (Part 1, Step 0), with the usual
 // defaults picked, plus a free box for anything else, like a message in chat.
-function BriefDialog({ name, savedBrief, onClose, onStart }: { name: string; savedBrief: boolean; onClose: () => void; onStart: (b: Brief) => void }) {
+function BriefDialog({ bridge, name, savedBrief, onClose, onStart }: { bridge: Bridge; name: string; savedBrief: boolean; onClose: () => void; onStart: (b: Brief) => void }) {
   const [b, setB] = useState<Brief>(BRIEF_DEFAULT);
+  // Style skills on this PC, read each time the dialog opens: a skill made in the AI editor chat
+  // (or added to ~/.claude/skills by hand) is a Style choice straight away.
+  const [skills, setSkills] = useState<{ name: string; description: string }[]>([]);
+  useEffect(() => {
+    bridge.call<{ skills: { name: string; description: string }[] }>('/api/skills').then((r) => setSkills(r.skills.filter((k) => !NOT_STYLE(k.name)))).catch(() => {});
+  }, [bridge]);
+  const optionsOf = (q: (typeof BRIEF_QUESTIONS)[number]) =>
+    q.key !== 'style' ? q.options : [...q.options.slice(0, -1), ...skills.map((k) => `${k.name} skill`), q.options[q.options.length - 1]];
+  const hint = (o: string) => skills.find((k) => `${k.name} skill` === o)?.description;
   const set = (k: string, v: string) => setB((x) => ({ ...x, [k]: v }));
   return (
     <Modal title="Create the 1st draft" onClose={onClose}
@@ -1863,8 +1887,8 @@ function BriefDialog({ name, savedBrief, onClose, onStart }: { name: string; sav
           <fieldset key={q.key}>
             <legend className={label}>{q.label}</legend>
             <div className="flex flex-wrap gap-1.5">
-              {q.options.map((o) => (
-                <button key={o} type="button" onClick={() => set(q.key, o)} aria-pressed={b[q.key] === o}
+              {optionsOf(q).map((o) => (
+                <button key={o} type="button" onClick={() => set(q.key, o)} aria-pressed={b[q.key] === o} title={hint(o)}
                   className={`rounded-full border px-3 py-1.5 text-xs transition ${b[q.key] === o ? 'border-18-orange bg-18-orange/10 text-18-orange font-semibold' : 'border-st-line text-st-ink hover:border-[#D4D4D4]'}`}>{o}</button>
               ))}
             </div>
@@ -2224,14 +2248,14 @@ function ChangesDialog({ stage, at, atName, onClose, onSend }: { stage: FirstDra
 
 // ---------- AI features bar ----------
 const pill = 'shrink-0 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium border transition disabled:opacity-40 disabled:cursor-not-allowed';
-function AiBar({ running, busyElsewhere, draft, chatOpen, unread, captionChanges, onFeature, onDraft, onStoryboard, onChanges, onChat, onStop }: {
+function AiBar({ running, busyElsewhere, draft, chatOpen, unread, captionChanges, hasBoard, onFeature, onDraft, onStoryboard, onChanges, onChat, onStop }: {
   running: boolean; busyElsewhere: string | null; draft: FirstDraft | null; chatOpen: boolean; unread: boolean; captionChanges: number | null;
-  onFeature: (f: (typeof AI_FEATURES)[number]) => void; onDraft: () => void; onStoryboard: () => void; onChanges: () => void; onChat: () => void; onStop: () => void;
+  hasBoard: boolean; onFeature: (f: (typeof AI_FEATURES)[number]) => void; onDraft: () => void; onStoryboard: () => void; onChanges: () => void; onChat: () => void; onStop: () => void;
 }) {
   const blocked = running || !!busyElsewhere;
   const st = draft?.stage;
-  // The storyboard opens only once the 1st draft has made one.
-  const storyboardOpen = st === 'storyboard' || st === 'draft-working' || st === 'draft';
+  // The storyboard opens once one has been made, by the 1st draft or from Ask AI.
+  const storyboardOpen = hasBoard || st === 'storyboard' || st === 'draft-working' || st === 'draft';
   const draftLabel = !st ? 'Create 1st draft'
     : st === 'storyboard-working' ? (running ? 'Making the storyboard…' : '1st draft: waiting for you')
     : st === 'storyboard' ? 'Storyboard ready: review it'
@@ -2259,7 +2283,7 @@ function AiBar({ running, busyElsewhere, draft, chatOpen, unread, captionChanges
             </button>
           )
         ))}
-        <button onClick={onStoryboard} disabled={!storyboardOpen} title={storyboardOpen ? 'Open the storyboard' : 'Unlocks when the 1st draft has made its storyboard'}
+        <button onClick={onStoryboard} disabled={!storyboardOpen} title={storyboardOpen ? 'Open the storyboard' : 'Unlocks once a storyboard has been made (1st draft, or ask for one in Ask AI)'}
           className={`${pill} border-st-line text-st-ink hover:border-18-orange/50 hover:text-18-orange`}>
           {storyboardOpen ? <LayoutGrid size={13} aria-hidden /> : <Lock size={12} aria-hidden />} Storyboard
         </button>
@@ -2291,8 +2315,9 @@ const KIND: Record<string, string> = {
   listCards: 'List', statCards: 'Stat', defCards: 'Definition', badgeCards: 'Badge', titles: 'Title', highlights: 'Highlight', lowerThirds: 'Lower third',
   zooms: 'Zoom', screenshots: 'Screenshot', tamBoard: 'Market board', tamSummary: 'Market recap', columnFocus: 'Column focus', captions: 'Caption',
   sfx: 'SFX', splitIntro: 'Opener', pip: 'Speaker PiP', timer: 'Timer',
+  shots: 'Shot', panels: 'Whiteboard panel', brolls: 'B-roll', // the Testimonial layout (testimonial.json)
 };
-const V1_KEYS = new Set(['segments', 'splitScreens']); // B-roll cutaways sit on V2, over the footage
+const V1_KEYS = new Set(['segments', 'splitScreens', 'shots']); // B-roll cutaways sit on V2, over the footage
 
 // Drag and drop from Media files onto the timeline.
 const DRAG_TYPE = 'application/x-studio-media';
@@ -2330,7 +2355,9 @@ function buildClips(data: Obj): { clips: Clip[]; duration: number } {
     add('A1', 'Voice', base(sg.src), pos, pos + (to - from), 'segments', i);
     pos += to - from;
   });
-  if (!segs.length && typeof data.src === 'string') add('V1', 'Footage', base(data.src), 0, duration, 'src', -1);
+  // One continuous source; with shots (the Testimonial layout's framings) those are the V1 clips.
+  if (!segs.length && typeof data.src === 'string' && !Array.isArray(data.shots)) add('V1', 'Footage', base(data.src), 0, duration, 'src', -1);
+  if (!segs.length && typeof data.src === 'string') add('A1', 'Voice', base(data.src), 0, duration, 'src', -1);
 
   for (const [key, v] of Object.entries(data)) {
     if (key === 'segments' || key === 'sfx' || key === 'music') continue;
@@ -2340,7 +2367,8 @@ function buildClips(data: Obj): { clips: Clip[]; duration: number } {
       const start = num(it.start), end = num(it.end);
       if (start == null || end == null) return;
       const kind = isObj(it) && key === 'scenes' && typeof it.kind === 'string' ? `Scene (${it.kind})` : KIND[key] ?? key;
-      add(key === 'captions' ? 'CC' : V1_KEYS.has(key) ? 'V1' : 'V2', kind, describe(it), start, end, key, Array.isArray(v) ? index : -1);
+      const shot = key === 'shots' ? (it.kind === 'both' ? 'Both speakers' : typeof it.kind === 'string' ? `Speaker ${it.kind.toUpperCase()}` : '') : '';
+      add(key === 'captions' ? 'CC' : V1_KEYS.has(key) ? 'V1' : 'V2', kind, shot || describe(it), start, end, key, Array.isArray(v) ? index : -1);
     });
   }
 
