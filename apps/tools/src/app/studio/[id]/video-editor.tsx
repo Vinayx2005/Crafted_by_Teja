@@ -1071,7 +1071,7 @@ function MediaPanel({ boxRef, d, bridge, view, onOpen, onChanged, pickKey, editP
         ) : list.length ? (
           <ul className="grid gap-2.5 grid-cols-[repeat(auto-fill,minmax(150px,1fr))]">
             {list.map((f) => (
-              <li key={f.path}><MediaCard f={f} url={bridge.fileUrl(d.id, f.path)} active={view?.path === f.path} onOpen={() => open(f)} /></li>
+              <li key={f.path}><MediaCard f={f} url={`${bridge.fileUrl(d.id, f.path)}&v=${Math.round(f.modified)}`}active={view?.path === f.path} onOpen={() => open(f)} /></li>
             ))}
           </ul>
         ) : tab !== 'footage' && <p className="text-xs text-st-mute p-2">{tab === 'outputs' ? 'Storyboards, style frames, previews, finals and captions appear here as the editor makes them.' : 'Contact sheets and working stills from work/ appear here.'}</p>}
@@ -1553,7 +1553,9 @@ function Viewer({ width, d, bridge, view, onVideo, program, onProgram, vertical,
   // The frame is always the delivery size: 1920 × 1080 (16:9), or 1080 × 1920 for 9:16 Shorts.
   const [fw, fh] = vertical ? [1080, 1920] : [1920, 1080];
   const [doc, setDoc] = useState<string | null>(null);
-  const url = view ? bridge.fileUrl(d.id, view.path) : '';
+  // With the file's time on the address, a file the AI re-renders shows its new version, not the cached one.
+  const vMod = view ? [...d.out, ...d.workImages].find((f) => f.path === view.path)?.modified : undefined;
+  const url = view ? `${bridge.fileUrl(d.id, view.path)}${vMod ? `&v=${Math.round(vMod)}` : ''}` : '';
 
   // Text files that are not already in the detail (srt, notes) are fetched when opened.
   useEffect(() => {
@@ -1937,8 +1939,9 @@ function StoryboardDialog({ d, bridge, draft, running, onClose, onApprove, onCha
   const shownSheets = frames.length ? sheets.filter((f) => !isBoard(f)) : sheets;
   const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
   const items: ViewItem[] = [
-    ...frames.map((f, k) => ({ src: bridge.fileUrl(d.id, f.path), title: clock(f.t), sub: `Frame ${k + 1} of ${frames.length}` })),
-    ...shownSheets.map((f) => ({ src: bridge.fileUrl(d.id, f.path), title: f.name, sub: when(f.modified) })),
+    // &v= is the file's time: a re-rendered frame gets a new address, so the browser loads it fresh.
+    ...frames.map((f, k) => ({ src: `${bridge.fileUrl(d.id, f.path)}&v=${Math.round(f.modified)}`, title: clock(f.t), sub: `Frame ${k + 1} of ${frames.length}` })),
+    ...shownSheets.map((f) => ({ src: `${bridge.fileUrl(d.id, f.path)}&v=${Math.round(f.modified)}`, title: f.name, sub: when(f.modified) })),
   ];
   const [view, setView] = useState<number | null>(null);
   const pending = draft?.stage === 'storyboard';
@@ -2409,7 +2412,10 @@ function typingOrDialog(e: KeyboardEvent): boolean {
 //    footage cut under the click, at the matching moment
 type Seg = { rel: string | null; from: number; to: number; start: number; end: number };
 
-type TimelineEdit = { op: 'split' | 'delete'; key: string; index: number; at?: number } | { op: 'delete-many'; items: { key: string; index: number }[] };
+type TimelineEdit = { op: 'split' | 'delete'; key: string; index: number; at?: number } | { op: 'delete-many'; items: { key: string; index: number }[] }
+  | { op: 'trim'; key: string; index: number; edge: 'start' | 'end'; to: number };
+// Clips whose edges can be dragged: footage cuts and anything else with its own start / end in the edit.
+const trimmable = (c: Clip) => c.ref.index >= 0 && !['music', 'sfx', 'src', 'audio', 'shots'].includes(c.ref.key);
 
 // A small tooltip under a toolbar button: its name and its shortcut, shown on hover or keyboard focus.
 function Tip({ label, keys, children, wide }: { label: string; keys?: string; children: React.ReactNode; wide?: boolean }) {
@@ -2691,6 +2697,58 @@ function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath,
     return r ? Math.max(0, Math.min(duration, (clientX - r.left) / pps)) : 0;
   };
 
+  // Drag a clip's edge to make it longer or shorter. While dragging, an outline shows the new size and the
+  // clip is dimmed; on release the new edge is saved, and Undo reverses it. The clip block itself is never
+  // moved by hand: React would not put it back where a later change leaves its props the same.
+  const trimmedAt = useRef(0); // the click that ends a drag must not also select / seek
+  const onEditRef = useRef(onEdit); // the clip blocks are memoised: always save with the latest settings (magnetic)
+  onEditRef.current = onEdit;
+  const startTrim = (e: React.PointerEvent<HTMLSpanElement>, c: Clip, edge: 'start' | 'end') => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget.parentElement as HTMLElement;
+    const ghost = document.createElement('div');
+    ghost.className = 'absolute pointer-events-none rounded-[4px] border-2 border-st-ink bg-white/40';
+    ghost.style.top = el.style.top;
+    ghost.style.height = el.style.height;
+    ghost.style.left = el.style.left;
+    ghost.style.width = el.style.width;
+    el.parentElement?.appendChild(ghost);
+    el.style.opacity = '0.35';
+    const x0 = e.clientX;
+    let to = edge === 'start' ? c.start : c.end;
+    const tip = document.createElement('div');
+    tip.className = 'fixed z-[80] pointer-events-none rounded bg-st-ink px-1.5 py-0.5 text-[11px] text-white tabular-nums';
+    document.body.appendChild(tip);
+    const move = (ev: PointerEvent) => {
+      const d = (ev.clientX - x0) / pps;
+      to = snapFrame(edge === 'start' ? Math.max(0, Math.min(c.end - 0.1, c.start + d)) : Math.max(c.start + 0.1, c.end + d));
+      const a = edge === 'start' ? to : c.start, b = edge === 'end' ? to : c.end;
+      ghost.style.left = `${a * pps}px`;
+      ghost.style.width = `${Math.max(2, (b - a) * pps - 1)}px`;
+      tip.textContent = `${edge === 'start' ? 'Start' : 'End'} ${fmtTime(to)} · ${(b - a).toFixed(1)}s`;
+      tip.style.left = `${ev.clientX + 10}px`;
+      tip.style.top = `${ev.clientY - 28}px`;
+    };
+    const done = (ev: PointerEvent | KeyboardEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('keydown', esc);
+      tip.remove();
+      ghost.remove();
+      el.style.opacity = '';
+      trimmedAt.current = Date.now();
+      const cancel = 'key' in ev || Math.abs(to - (edge === 'start' ? c.start : c.end)) < 1 / fps / 2;
+      if (cancel) return;
+      onEditRef.current({ op: 'trim', key: c.ref.key, index: c.ref.index, edge, to });
+    };
+    const esc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') done(ev); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', done);
+    window.addEventListener('keydown', esc);
+  };
+
   // Latest values for the window listeners, so they are bound once.
   const selectAll = () => setSelIds(clips.filter((c) => !hidden[c.track] && !locked[c.track]).map((c) => c.id));
   const live = useRef({ t, pps, cuts, player, liveCtl, seek, zoom, selClips, deleteSelected, toggleMarker, selectFrom, selectAll });
@@ -2795,7 +2853,7 @@ function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath,
           <button key={c.id} type="button" title={`${c.kind} · ${fmtTime(c.start)}–${fmtTime(c.end)}${c.text ? `\n${c.text}` : ''}`}
             onClick={(e) => {
               e.stopPropagation();
-              if (locked[tr.key]) return;
+              if (locked[tr.key] || Date.now() - trimmedAt.current < 300) return;
               if (tool === 'cut') { setSel(null); onEdit({ op: 'split', key: c.ref.key, index: c.ref.index, at: snapFrame(lanesSec(e.clientX)) }); return; }
               if (e.shiftKey) { setSelIds((ids) => (ids.includes(c.id) ? ids.filter((x) => x !== c.id) : [...ids, c.id])); return; }
               setSel(c); seek(c.start);
@@ -2804,6 +2862,11 @@ function Timeline({ data, file, srcPrefix, video, player, viewPath, programPath,
             className={`absolute rounded-[4px] border text-[10px] leading-[16px] px-1 truncate text-left text-white ${tr.color} ${selIds.includes(c.id) ? 'ring-2 ring-st-ink ring-offset-1' : ''} ${locked[tr.key] ? 'cursor-not-allowed' : tool === 'cut' ? 'cursor-crosshair' : 'hover:brightness-110'}`}
             style={{ left: c.start * pps, width: Math.max(2, (c.end - c.start) * pps - 1), top: 4 + li * LANE_H, height: LANE_H - 3 }}>
             {(c.end - c.start) * pps > 36 ? (tr.key === 'CC' ? c.text : `${c.kind}${c.text ? ` · ${c.text}` : ''}`) : ''}
+            {tool === 'select' && !locked[tr.key] && trimmable(c) && (c.end - c.start) * pps >= 14 && (['start', 'end'] as const).map((edge) => (
+              <span key={edge} aria-hidden onPointerDown={(e) => startTrim(e, c, edge)} onClick={(e) => e.stopPropagation()}
+                title={edge === 'start' ? 'Drag to change where it starts' : 'Drag to change where it ends'}
+                className={`absolute top-0 bottom-0 w-[6px] cursor-ew-resize ${edge === 'start' ? 'left-0 rounded-l-[3px]' : 'right-0 rounded-r-[3px]'} hover:bg-white/60`} />
+            ))}
           </button>
         )))}
       </div>
